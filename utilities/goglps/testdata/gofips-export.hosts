@@ -1,0 +1,18 @@
+# gofips fixed IP assignments
+# exported from UDM at 192.168.4.1
+# date: 2026-07-27
+
+host myserver {
+    hardware ethernet aa:bb:cc:dd:ee:01;
+    fixed-address 192.168.4.10;
+}
+
+host printer {
+    hardware ethernet aa:bb:cc:dd:ee:02;
+    fixed-address 192.168.4.11;
+}
+
+host nas {
+    hardware ethernet aa:bb:cc:dd:ee:03;
+    fixed-address 192.168.4.13;
+}

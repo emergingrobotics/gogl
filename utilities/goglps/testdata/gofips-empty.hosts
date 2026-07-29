@@ -1,0 +1,10 @@
+# gofips fixed IP assignments
+# exported from UDM at 192.168.4.1
+# date: 2026-07-27
+#
+# No fixed IP assignments found.
+# Example:
+# host mydevice {
+#     hardware ethernet aa:bb:cc:dd:ee:ff;
+#     fixed-address 192.168.1.10;
+# }

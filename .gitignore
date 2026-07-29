@@ -1,0 +1,101 @@
+# Environment files (secrets)
+.env
+.env.*
+.envrc
+*.env
+
+# Router credentials must never be committed. GL_PASSWORD is read from the
+# environment; keep it in an untracked file if you source one.
+gl-credentials
+gl-credentials.*
+
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Guard against binaries accidentally built into the repo root (they belong in bin/).
+# Leading slash anchors to root so the source package directories are unaffected.
+/goglps
+/goglmac
+/goglnet
+
+# Go build artifacts
+*.o
+*.a
+*.test
+*.out
+
+# Coverage reports
+coverage.out
+coverage.html
+*.coverprofile
+
+# Dependency directories
+vendor/
+
+# Captured API fixtures are committed on purpose (they are the API reference),
+# and so is the probe itself. But raw discovery transcripts may contain a live
+# session id or a password digest, so keep those out until they have been
+# reviewed and reduced to a fixture.
+/discovery/*
+!/discovery/probe.go
+!/discovery/README.md
+*.rpclog
+
+# Exported host files may document a customer's network. Commit them
+# deliberately under a named directory, not by accident from the repo root.
+/*.hosts
+
+# IEEE OUI database cache, if anyone points XDG_DATA_HOME at the repo
+oui.txt
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Debug files
+debug
+debug.test
+*.prof
+*.pprof
+
+# Local configuration
+*.local
+config.local.*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.log
+
+# Go workspace files (if not using workspaces)
+go.work
+go.work.sum
+
+# Agent/process scratch (skill work artifacts)
+.llm/
+.superpowers/

@@ -6,16 +6,19 @@ targeting the **GL-SFT1200 (Opal)**.
 `gogl` is the travel-router counterpart to
 [`gofi`](https://github.com/emergingrobotics/gofi). It exposes the same shape of API and
 the same command-line ergonomics, so that a network described on a UniFi UDM Pro can be
-reproduced on a pocket router. Dump the fixed-IP and DNS assignments from a UniFi site
-with `gofips`, hand the file to `goglps`, and the travel router serves the same addresses
-and the same names.
+reproduced on a pocket router. Dump the fixed-IP assignments from a UniFi site with
+`gofips`, hand the file to `goglps`, and the travel router hands out the same addresses to
+the same MAC addresses.
+
+Addresses, not names: a reservation on this firmware does not create a DNS record. See
+[The Reservation Model](#the-reservation-model).
 
 ## Target Device
 
 | Property | Value |
 |----------|-------|
 | Model | GL-SFT1200 ("Opal") |
-| Firmware track | 4.x (4.8.3 at time of writing) |
+| Firmware verified | **4.3.28** (model string `sft1200`) |
 | SoC | SiFlower SF19A28 |
 | OpenWrt base | 18.06 |
 | Ethernet | 1 x GbE WAN, 2 x GbE LAN |
@@ -26,13 +29,17 @@ and the same names.
 Firmware 4.x is a hard requirement. GL.iNet replaced the older REST API with JSON-RPC at
 firmware 4.0, and `gogl` speaks only JSON-RPC. Firmware 3.x devices are out of scope.
 
-Other GL.iNet 4.x models should work, since the API is shared across the firmware line,
-but the SFT1200 is the only device this module is specified and tested against.
+Other GL.iNet 4.x models should work, since the API is shared across the firmware line, but
+the SFT1200 is the only device this module is tested against — and it is a **reduced build**:
+six endpoints GL.iNet documents are absent on it. See [`docs/api/`](docs/api/README.md),
+where every method is marked verified, absent, or untested.
 
 ## Project Resources
 
-- **API Reference**: `GL_INET_4X_API_DOCUMENTATION.md` - Endpoint documentation, captured
-  and verified against a live SFT1200 (see [API Discovery](#api-discovery)).
+- **API Reference**: [`GL_INET_4X_API_DOCUMENTATION.md`](GL_INET_4X_API_DOCUMENTATION.md) -
+  authentication, error codes, and every endpoint verified against a live SFT1200.
+- **Full API**: [`docs/api/`](docs/api/README.md) - all 43 groups and 313 methods, generated
+  from GL.iNet's own API description.
 - **Architecture**: `docs/DESIGN.md` - Design with mermaid diagrams, service interfaces,
   type definitions.
 - **Implementation Plan**: `docs/plan.md` - Phased plan with progress tracking.
@@ -43,31 +50,91 @@ but the SFT1200 is the only device this module is specified and tested against.
 2. **Every endpoint MUST be supported in the mock server** - Tests use the mock, not real hardware.
 3. **No phase advancement without 100% test coverage** - Complete and test each phase before moving on.
 4. **Phases are sequential** - Follow `docs/plan.md` in order.
-5. **No SSH, no UCI, no shell** - Every operation goes through the JSON-RPC API. Anything
-   the API cannot express is a documented gap, never a shell workaround. This keeps the
-   entire surface reachable by the mock server.
+5. **No SSH, no shell** - Every operation goes through an HTTP API, so the entire surface
+   stays reachable by the mock server. Anything no HTTP API can express is a documented gap,
+   never a shell workaround.
+
+   Originally this rule said "no UCI" as well. UCI over `POST /ubus` is an HTTP API and would
+   have been admissible under the amended rule -- it is the only way to set dnsmasq's domain.
+   It is moot on this device regardless: `/ubus` returns 404, because nginx fronts the admin
+   interface rather than uhttpd. See
+   [`GL_INET_4X_API_DOCUMENTATION.md`](GL_INET_4X_API_DOCUMENTATION.md). SSH and shell remain
+   excluded: neither is mockable, and both put the tool outside what a locked-down device
+   permits.
 
 ## Scope
 
 `gogl` v1 manages, on a single flat LAN with no VLANs:
 
-- **Network information** - LAN address, netmask, DHCP pool boundaries, lease time, DNS servers.
-- **Static IP reservations** - MAC-to-IP bindings.
-- **Local DNS** - names for the hosts whose addresses it reserves.
+- **Network configuration** - LAN address, netmask, DHCP pool. Read and **written**
+  (`lan.set_config`). Writing is refused while reservations exist; see
+  [Ordering Rules](#ordering-rules).
+- **Static IP reservations** - MAC-to-IP bindings, created, updated, deleted individually or
+  cleared wholesale.
+- **DNS names** - through the router's host file (`dns.set_host`), which dnsmasq answers from.
+  A reservation does **not** create a DNS record; see
+  [The Reservation Model](#the-reservation-model).
+- **The DNS domain** - carried by gogl inside its block in the host file, because the firmware
+  exposes no dnsmasq domain setting. Required before any reservation write.
+- **DHCP leases** - read-only, and the way to discover what is worth reserving.
 - **Connected clients** - with independent IEEE OUI manufacturer lookup.
 
 Explicitly **out of scope for v1**:
 
-- **Wireless configuration.** SSIDs, passphrases, and radio settings are managed through
-  the GL.iNet admin panel. `gogl` never writes them. Writing wireless config over a
-  wireless management session is a good way to lock yourself out of the device.
-- **VLANs.** The Opal exposes no VLAN configuration through its API. VLANs are reachable
-  only via LuCI/UCI and `swconfig` on this SoC, which rule 5 forbids and which users
-  report as unreliable on the SiFlower switch.
-- **Guest network.** Reported by `goglnet` for address planning if the API exposes it,
-  never written.
+- **Wireless configuration.** SSIDs, passphrases, and radio settings are managed through the
+  GL.iNet admin panel. `gogl` never writes them. Writing wireless config over a wireless
+  management session is a good way to lock yourself out of the device.
+- **VLANs.** The Opal exposes no VLAN configuration through its API.
+- **Guest network writes.** Reported by `goglnet` for address planning; `lan.set_config` can
+  address it, but v1 only ever writes the main LAN.
 - **VPN, firewall, port forwarding, traffic rules.**
-- **Changing the router's LAN address.** See [Subnet Mismatch](#subnet-mismatch).
+- **dnsmasq's own `domain` / `local` / `expandhosts` settings.** No endpoint exposes them and
+  `/ubus` is unavailable. gogl writes fully-qualified names into the host file instead, which
+  works for any suffix.
+
+An earlier version of this document made "reservations are the only thing gogl writes" a
+design rule, on the grounds that a bulk import should never be able to change the address the
+router is managed at. That concern is real, and it is now handled by the ordering rules below
+rather than by refusing to write at all.
+
+## Ordering Rules
+
+Two preconditions, both enforced in the library so no consumer can bypass them, and both
+covering states that are tedious to recover from.
+
+### A reservation write requires a configured domain
+
+`Create` and `Update` return `ErrDomainNotSet` until a domain exists.
+
+A reservation creates no DNS record on its own. Writing one before the domain is set yields an
+address with no name and nothing to indicate that was unintended -- you find out later, when
+something cannot resolve. Making the domain a precondition forces the pairing to be
+deliberate. Reads and deletes are ungated: only writes that create addressing are.
+
+### A network change requires no reservations
+
+`Network().Set` returns `ErrReservationsExist` while any reservation is present.
+
+Renumbering the LAN underneath live reservations leaves every one of them outside the new
+subnet: still listed in the admin panel, silently inert, and easy to miss for a long time.
+Clear them, apply the new network, then import the addresses you want.
+
+The correct order is therefore:
+
+1. `goglps --domain <domain>`
+2. `goglps --clear` if reservations already exist
+3. `goglnet --set-ip ... --set-mask ... --set-start ... --set-end ...`
+4. `goglps --set <file>`
+
+Step 3 moves the router, so the session drops. That is inherent, not a defect. Both writing
+steps take `--dry-run`, and a dry run runs every check the real write runs, including the
+refusals: a preview that approves what the write would reject is worse than no preview.
+
+`--clear` removes the managed DNS names along with the reservations, because they are one
+intent stored in two tables. Clearing only the bindings would leave names resolving to
+addresses the router no longer reserves, and since clearing is what unblocks step 3, those
+names would end up answering for a subnet that no longer exists — exactly the stranded state
+the guard exists to prevent. The domain from step 1 survives a clear.
 
 ## Concurrency Requirements
 
@@ -96,7 +163,7 @@ gogl/
 │   ├── errors.go      # Sentinel errors, RPCError type
 │   ├── services/      # Service implementations
 │   │   ├── network.go     # LAN address, DHCP server settings
-│   │   ├── reservation.go # Static leases (DHCP binding + DNS name)
+│   │   ├── reservation.go # Static MAC-to-IP bindings
 │   │   ├── client.go      # Connected clients
 │   │   └── system.go      # Model, firmware version, uptime
 │   ├── mock/          # Mock JSON-RPC server for testing
@@ -108,16 +175,17 @@ gogl/
 │   ├── transport/     # JSON-RPC envelope, sid injection, retry on expiry
 │   └── internal/      # Internal helpers
 ├── examples/          # Runnable example programs (consumers)
-└── utilities/         # CLI tools: goglps, goglmac, goglnet, goglsync
+└── utilities/         # CLI tools: goglps, goglmac, goglnet
 ```
 
 ### Differences from gofi's service layer
 
 - **No site concept.** GL.iNet routers have no equivalent of a UniFi site. Every `site`
   parameter present in `gofi`'s method signatures is absent here.
-- **No separate DNS service.** On the Opal a reservation *is* the DNS record; see
-  [The Unified Reservation](#the-unified-reservation). `gofi` needs `Users()` and `DNS()`
-  kept in sync. `gogl` needs neither.
+- **No DNS service at all.** Not because a reservation doubles as one — it does not, see
+  [The Reservation Model](#the-reservation-model) — but because the firmware exposes no way to
+  set a per-host DNS record. `gofi` needs `Users()` and `DNS()` kept in sync; `gogl` has
+  neither to offer.
 - **No device service.** The router is the only device. `System()` reports it.
 - **No WebSocket.** Firmware 4.x has no event stream equivalent to UniFi's.
 
@@ -229,69 +297,79 @@ Do not hard-code a group or method name into a service until it appears in a rec
 fixture. The generic `Call` remains public after Phase 0, both as an escape hatch and
 because it is how future discovery happens.
 
-## The Unified Reservation
+## The Reservation Model
 
-This is the most important structural difference from `gofi`, and it makes `gogl` simpler
-than its counterpart.
+This section originally asserted that one reservation provides both the DHCP binding **and**
+the DNS record, atomically. **That was tested against a GL-SFT1200 on firmware 4.3.28 and is
+false.** The corrected model follows; the original claim is recorded because a good deal of
+the design was built on it.
 
-The Opal runs dnsmasq. A static lease in dnsmasq carries a name alongside the MAC and IP,
-and dnsmasq answers DNS queries for that name. GL.iNet's admin panel surfaces this as
-**LAN → Address Reservation**, with Name, MAC Address, and IP Address fields, and writes
-all three into the dnsmasq configuration.
+### What a reservation actually is
 
-So one reservation entry provides both the DHCP binding and the DNS record, atomically:
+The Opal runs dnsmasq, and GL.iNet's admin panel presents **LAN → Address Reservation** with
+Name, MAC and IP fields. The natural reading is that the Name becomes a dnsmasq hostname.
+It does not.
 
 ```
 Reservation{Name: "myserver", MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.8.10"}
 ```
 
-...yields a device that always receives `192.168.8.10`, and a name `myserver` that
-resolves to `192.168.8.10` for every client of the router.
+...yields a device that always receives `192.168.8.10`. It does **not** yield a name that
+resolves.
 
-Consequences, all of which the implementation depends on:
+Two experiments established this:
 
-- **Drift is impossible.** `gofips` must keep a UniFi user record's fixed IP and a
-  separate static DNS record consistent, and can find them disagreeing. `goglps` writes
-  one entry. There is nothing to reconcile.
-- **`--keep-dns` is meaningless and is not implemented.** You cannot retain the name
-  while removing the reservation; they are the same object.
-- **Names are not optional in practice.** A reservation with an empty name is a valid
-  DHCP binding with no DNS. `goglps` always writes a name, because the ISC DHCP format it
-  consumes is keyed by hostname.
-- **DNS is limited to reserved hosts.** A host with a hand-configured static IP outside
-  the reservation table gets no name. This is a documented limitation, and it matches the
-  intended model: the router serves DNS for exactly the hosts whose DHCP it manages.
+1. A reservation for a MAC no device was using. The name resolved neither bare nor with the
+   `.lan` suffix.
+2. A reservation for a **present, actively leased** device under a *different* name. The new
+   name still did not resolve, while that device's original lease hostname continued to
+   resolve throughout.
 
-### Domain Suffix
+### Where DNS names actually come from
 
-The router's dnsmasq domain defaults to `lan`, so a reservation named `myserver` resolves
-as both `myserver` and `myserver.lan`. `goglnet` reports the configured suffix. `goglps`
-stores and emits bare names, never fully-qualified ones.
+The router answers from **DHCP leases**. The hostname in a lease is the one the client
+announced about itself. So:
+
+| | Source | Controlled by |
+|---|--------|---------------|
+| Address a device receives | static bind (reservation) | **gogl** |
+| Name that resolves | DHCP lease hostname | **the client** |
+
+### Consequences for this project
+
+- **gogl reproduces addresses, not names.** That is the honest scope.
+- **A reservation's Name is a label.** It identifies the entry in the admin panel and keys it
+  in an exported host file, which is genuinely useful — but nothing resolves it.
+- **`--keep-dns` still has no analogue**, for a duller reason than originally argued: there is
+  no DNS record to keep.
+- **Drift is still impossible**, but trivially so. `gofips` must keep a UniFi user record and
+  a separate DNS record consistent; gogl writes one object that has no DNS half.
+- **Names often work anyway, and that is not gogl's doing.** Most devices announce a sensible
+  hostname over DHCP, so `nas.lan` frequently resolves. gogl neither causes that nor can
+  arrange it for a device that stays silent.
 
 ### Name Validation
 
-GL.iNet writes the reservation name directly into the dnsmasq configuration file, and a
-known firmware defect lets characters such as `"` corrupt that file, breaking DHCP and DNS
-for the entire router until it is repaired.
+The name still gets strict DNS-label validation, for two reasons that survive the correction:
 
-`gogl` therefore validates every name before any write, and rejects rather than escapes:
+GL.iNet writes the name into its dnsmasq configuration file, and a known firmware defect lets
+a character such as `"` corrupt that file, breaking DHCP for the entire router until it is
+repaired by hand. And the ISC DHCP host-declaration format this project exchanges is keyed by
+hostname, so a name that is not a legal DNS label cannot round-trip through it.
+
+Validation rejects rather than escapes:
 
 - Permitted characters: `[a-zA-Z0-9-]`, plus `.` as a label separator.
 - Must not begin or end with `-` or `.`.
 - Each label at most 63 characters; total at most 253.
 - Must not be empty.
 
-This validation lives in the library, not in the CLI, so no consumer can bypass it.
+This lives in the library, not the CLI, so no consumer can bypass it.
 
-**This is deliberately stricter than `gofips`.** `gofips` accepts `_` in hostnames, which
-is legal in a UniFi record but is not a legal DNS label character and has no business in a
-dnsmasq name. So a host file exported from a UniFi controller that contains a name like
-`my_server` will be **rejected** by `goglps`, with the offending name and character
-reported, rather than silently rewritten to `my-server`.
-
-This is the one place where a `gofips` file is not guaranteed to import unchanged. Renaming
-is a decision about what your hosts are called, and `gogl` will not make it silently. Fix
-it on the UniFi side, or edit the file.
+**This is deliberately stricter than `gofips`**, which accepts `_`. A host file containing
+`my_server` is **rejected** with the offending character named, rather than silently rewritten
+to `my-server`. It is the one case where a `gofips` file may not import unchanged, and
+renaming is a decision about what your hosts are called — not one to make silently.
 
 ## Type Patterns
 
@@ -349,117 +427,94 @@ the UniFi controller and the travel router with no conversion step. The format i
 diffable, version-controllable, and hand-editable, which is the whole argument for it.
 
 One caveat: `goglps` validates hostnames more strictly than `gofips` does, so a file
-containing a name that is legal on UniFi but not in DNS is rejected rather than converted.
+containing a name that is legal on UniFi but not a legal DNS label is rejected rather than
+converted.
 See [Name Validation](#name-validation).
 
 ### End-to-End Workflow
 
-This example assumes a home network of `192.168.4.0/24` behind a UDM Pro at
+Two commands. This example assumes a home network of `192.168.4.0/24` behind a UDM Pro at
 `192.168.4.1`, and a travel router whose LAN address has already been set to
-`192.168.4.1/24`. That last part is a prerequisite, not something `goglsync` does; see
-[Subnet Mismatch](#subnet-mismatch).
+`192.168.4.1/24` by hand. That last part is a prerequisite; see
+[The Router's Own Configuration](#the-routers-own-configuration).
 
 ```bash
-# On the UniFi side: dump the network shape and the host bindings.
-gofinet -H 192.168.4.1 -k -j    > home.net.json
-gofips  -H 192.168.4.1 -k --get > home.hosts
+# On the UniFi side, at home:
+gofips -H 192.168.4.1 -k --get > home.hosts
 
-# Inspect what the travel router currently looks like. Note the different address:
-# the travel router is reached over its own LAN, not the UDM's.
-goglnet -H 192.168.4.1
-
-# Preview every change, touching nothing.
-goglsync -H 192.168.4.1 --net home.net.json --hosts home.hosts --dry-run
-
-# Apply.
-goglsync -H 192.168.4.1 --net home.net.json --hosts home.hosts
+# Later, against the travel router:
+goglps -H 192.168.4.1 --set home.hosts
 ```
 
 The two `-H 192.168.4.1` values refer to different devices on different occasions: the UDM
 Pro while you are at home taking the dump, and the travel router later. They coincide
-because the travel router is impersonating the UDM's LAN address, which is the entire
-point. Do not run both halves of this workflow with both devices on the same segment.
+because the travel router is standing in for the UDM's LAN address, which is the entire
+point. Do not run both halves with both devices on the same segment.
+
+Use `goglnet` beforehand to confirm the router's subnet and pool, and `goglps --set
+--dry-run` to see exactly what would change before it changes.
 
 The result is a travel router that hands out the same addresses to the same MAC addresses
 and answers the same names as the network it was copied from. Plug it into hotel ethernet,
 and devices that expect `myserver` at `192.168.4.10` find it there.
 
-### What Is Reproduced
+### What Crosses Over
 
-| From the UniFi dump | On the travel router | Notes |
-|---------------------|----------------------|-------|
-| `dhcpd_start` / `dhcpd_stop` | DHCP pool start / limit | dnsmasq expresses the pool as start plus a count; `goglsync` converts. |
-| `dhcpd_leasetime` | Lease time | Seconds converted to dnsmasq duration form. |
-| `dhcpd_dns_1` .. `dhcpd_dns_4` | DNS servers | The Opal accepts fewer; excess entries are reported, not silently dropped. |
-| `domain_name` | dnsmasq domain suffix | |
-| Each `host {}` block | One address reservation | Supplies both the DHCP binding and the DNS name. |
+| From the UniFi dump | On the travel router |
+|---------------------|----------------------|
+| Each `host {}` block, address | One static bind: a MAC-to-IP binding |
+| Each `host {}` block, hostname | One host-file entry, answering both bare and qualified |
 
-### What Is Not Reproduced
+Each host declaration therefore becomes **two** writes, to two independent tables that the
+firmware does not join for you. `goglps` performs both and reports them as one row, which is
+the honest presentation: they are one intent, and either can be present without the other.
 
-`goglsync` reports each of these explicitly rather than failing silently. A dump
-containing them still applies; the report names what was left behind.
+Nothing else crosses over, because `gofips --get` emits host declarations and nothing else.
+The network's *shape* — subnet and pool boundaries — is not in the file, so you either set it
+with `goglnet --set-*` or in the admin panel. Lease time and upstream DNS servers stay
+whatever the router has; see the warning below for why you want that for DNS in particular.
 
-| From the UniFi dump | Why not |
-|---------------------|---------|
-| VLANs / additional networks | Out of scope. A dump with more than one LAN-purpose network is an error, not a partial apply. |
-| Wireless config | Out of scope for v1. |
-| Firewall rules, port forwards, traffic rules | Out of scope for v1. |
-| WAN configuration | The travel router's WAN is whatever it is plugged into. |
-| IPv6, mDNS, IGMP snooping, DHCP guard, ARP inspection | No API equivalent within v1 scope. |
-| DNS records not backed by a reservation | See [The Unified Reservation](#the-unified-reservation). |
+### The Router's Own Configuration
 
-### Subnet Mismatch
+`goglnet` reports the subnet, pool, and lease time, and writes the first two with
+`--set-ip`, `--set-mask`, `--set-start`, and `--set-end`. Lease time and upstream DNS
+servers are read-only: no endpoint on this firmware sets them.
 
-A UniFi LAN is typically something like `192.168.4.0/24`. The Opal ships on
-`192.168.8.0/24`. Reservations at `192.168.4.x` are meaningless on a router whose LAN is
-`192.168.8.0/24`, so the two must agree before any reservation can be written.
+Two things to get right, because both cause failures that are hard to read from the symptom:
 
-**`gogl` v1 does not resolve this automatically. It detects it and refuses.**
+**Match the subnet to the network you are standing in for.** A reservation at
+`192.168.4.10` is meaningless on a router whose LAN is `192.168.8.0/24`. Set the LAN address
+first, either with `goglnet --set-ip 192.168.4.1 --set-mask 255.255.255.0 --set-start ...
+--set-end ...` or in the admin panel under LAN → Router IP Address. The management session
+drops when the router moves, and you reconnect at the new address; `goglnet` treats a
+connection loss after the request as success, because that is what a successful renumber
+looks like from this end.
 
-The reason is that both possible fixes are disruptive, and neither should happen as a side
-effect of a sync:
+`goglnet` refuses the change while any reservation exists, and `goglps` refuses any
+reservation outside the current subnet rather than writing something inert. Between them there
+is no order of operations that leaves a reservation stranded, and neither failure is silent.
 
-- **Re-IP the router** to match the dump. This changes the address you are managing the
-  router at, so it drops your management session mid-operation, and your own machine holds
-  a DHCP lease on the old subnet until it renews. A tool that does this has to survive
-  losing contact with the device it is configuring, partway through a multi-step change.
-- **Renumber the host file** to the router's subnet, rewriting the network part of every
-  address while preserving host parts. Non-destructive to the router, but it silently
-  changes the addresses you asked for, which is not something to do without being asked.
-
-So when `goglsync` finds that the dump's subnet and the router's LAN subnet differ, it
-prints both remedies and exits 1 before writing anything:
-
-```
-error: subnet mismatch
-  dump subnet:   192.168.4.0/24 (from home.net.json)
-  router LAN:    192.168.8.1/24
-  38 of 38 reservations fall outside the router's LAN.
-
-Resolve by either:
-  - Setting the router's LAN address to 192.168.4.1/24 in the GL.iNet admin panel
-    (LAN -> Router IP Address), then re-running. Your management session will drop
-    and you will need to reconnect at the new address.
-  - Renumbering home.hosts into 192.168.8.0/24 by hand before re-running.
-```
-
-`goglps` applies the same rule per entry: a reservation whose IP falls outside the current
-LAN subnet is rejected with the specific conflict named. Neither tool ever writes the
-router's LAN address.
+**Do not copy your home network's DNS servers.** This is the trap. If your home network
+hands out a Pi-hole at `192.168.4.5`, and you configure the travel router to advertise that
+same resolver, then every client at the customer site is told to use a DNS server that does
+not exist there. It presents as "the internet is broken," not as "DNS is misconfigured."
+Leave the router advertising **itself**: dnsmasq answers your reservation names locally and
+forwards everything else to whatever resolver the WAN handed it. That works in a hotel, at
+a customer site, and on a bench with no uplink at all. Public resolvers like `1.1.1.1` are
+safe to set if you want them, since they work anywhere.
 
 ### Future Work
 
-Two tools would close the gap, and the design above leaves room for both:
-
-- **`goglreip`** - change the router's LAN address as a deliberate, single-purpose,
-  confirmed operation, with the reconnection handling that requires. Kept separate from
-  `goglsync` so that the destructive step is never incidental to a sync.
 - **`goglrenumber`** - rewrite the network part of every address in an ISC DHCP file to a
-  target subnet, preserving host parts, emitting a new file rather than editing in place.
-  A pure text transformation with no device access, and therefore the cheaper of the two
-  to build and trust.
+  target subnet, preserving host parts, emitting a new file rather than editing in place. A
+  pure text transformation with no device access, which makes it cheap to build and easy to
+  trust. This is the alternative to re-IPing the router: instead of moving the router to
+  the file's subnet, move the file to the router's.
+Renumbering the router is no longer future work: `goglnet --set-*` does it. It stayed out of
+`goglps` deliberately, so that losing contact with the device is never a side effect of
+importing a host file.
 
-Neither is in v1. `goglsync`'s error message points at the manual equivalent of each.
+`goglrenumber` is not in v1.
 
 ## Common CLI Conventions
 
@@ -496,9 +551,14 @@ There is no `--site` flag. GL.iNet routers have no sites.
 
 ## goglps Tool
 
-A command-line tool for managing static IP reservations and their DNS names on a GL.iNet
-travel router, using ISC DHCP host declaration format. Lives in `utilities/goglps/`.
-Built on the gogl module. The counterpart to `gofips`.
+A command-line tool for managing static IP reservations and DNS names on a GL.iNet travel
+router, using ISC DHCP host declaration format. Lives in `utilities/goglps/`. Built on the gogl
+module. The counterpart to `gofips`.
+
+Each host declaration becomes **two** writes, because the firmware stores the two facts
+separately: a static bind for the address, and a host-file entry for the name. The hostname on a
+bind is a label and resolves nothing; the DNS record comes from the host file. `goglps` keeps
+both in step, so a caller writes one declaration and gets both.
 
 ### Purpose
 
@@ -512,6 +572,7 @@ format so that administrators can:
 - Import a file of host declarations to provision the router in bulk, including files
   produced by `gofips` from a UniFi controller.
 - Add or delete individual hosts from the command line using the same format fragment.
+- Set the DNS domain the names are qualified under, and clear both tables wholesale.
 
 ### ISC DHCP Host Declaration Format
 
@@ -563,6 +624,8 @@ goglps [connection flags] --del --ip <ip>
 | `--set` | `-s` | Import host declarations from a file or stdin |
 | `--add` | `-a` | Add a single host from a declaration fragment (string argument or stdin) |
 | `--del` | `-d` | Delete a host identified by `--name`, `--mac`, or `--ip` |
+| `--domain` | n/a | Set the DNS domain. Required before any reservation write |
+| `--clear` | n/a | Delete every reservation and every managed DNS name |
 
 Exactly one mode flag must be specified. Specifying none, or more than one, prints usage
 and exits with error.
@@ -584,11 +647,12 @@ proceed.
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--force` | `-f` | Skip conflict checks; proceed even if multiple matches found on delete |
-| `--prune` | `-P` | On `--set`, delete reservations present on the router but absent from the file |
-| `--dry-run` | n/a | Show what would be done without making changes |
+| `--prune` | `-P` | On `--set`, delete reservations present on the router but absent from the file, and their DNS names |
+| `--dry-run` | n/a | Show what would be done without making changes. Runs every check the real write runs, including the refusals |
 
-`gofips`'s `--keep-dns` flag has no analogue. On this device the DNS name and the
-reservation are one object, so retaining one while deleting the other is not expressible.
+`gofips`'s `--keep-dns` flag has no analogue, for a duller reason than first assumed: a
+reservation creates no DNS record, so there is nothing to keep. See
+[The Reservation Model](#the-reservation-model).
 
 ### Behavior: `--get` Mode
 
@@ -596,11 +660,10 @@ reservation are one object, so retaining one while deleting the other is not exp
 2. List all reservations via `client.Reservations().List()`.
 3. For each reservation, the hostname is the reservation's own name. There is no fallback
    chain and no cross-referencing, because there is no second record that could disagree.
-   A reservation with an empty name is emitted with the MAC as its hostname, colons
-   replaced by hyphens (e.g. `aa-bb-cc-dd-ee-ff`), and a comment noting that the router
-   serves no DNS for it. Be aware that this does not round-trip inertly: feeding that file
-   back through `--set` gives the reservation that MAC-derived name for real, and the
-   router starts answering DNS for it. The emitted comment says so.
+   A reservation with an empty name is emitted with the MAC as its hostname, colons replaced
+   by hyphens (e.g. `aa-bb-cc-dd-ee-ff`), and a comment saying so. Be aware that this does not
+   round-trip inertly: feeding that file back through `--set` gives the reservation that
+   MAC-derived label for real. The emitted comment says so.
 4. Sort entries by IP address numerically.
 5. Output to stdout in ISC DHCP format with a header comment:
 
@@ -643,21 +706,49 @@ from the file itself.
 3. Connect to the router.
 4. Fetch the current LAN configuration and reservation table.
 5. Validate every entry against the device:
-   - IP must fall within the LAN subnet. If any entry fails, report the mismatch as in
-     [Subnet Mismatch](#subnet-mismatch) and exit 1 without writing.
-   - IP must fall outside the DHCP dynamic pool, or the router may hand the same address
-     to another client. Report as an error per entry; `--force` downgrades it to a warning.
+   - IP must fall within the LAN subnet. If any entry fails, print the subnet mismatch
+     report (below) and exit 1 without writing.
    - IP must not be the router's own LAN address.
-6. For each host declaration:
-   - **Skip if unchanged**: MAC already reserved with the same IP and name. Print skip to stderr.
-   - **Update if changed**: MAC exists but IP or name differs. Update the reservation.
-     Print update to stderr.
-   - **Create if new**: MAC has no existing reservation. Create it. Print create to stderr.
-7. If `--prune`, delete reservations on the router whose MAC does not appear in the file.
-   Without `--prune`, extra reservations on the router are left alone and counted in the
-   summary.
-8. Print summary to stderr: `N processed, N skipped, N created, N updated, N pruned, N errors`.
-9. Exit 1 if any errors occurred.
+   - An IP inside the DHCP dynamic pool is a **warning, not an error**. dnsmasq honors a
+     static host entry whose address lies inside the dynamic range and excludes that
+     address from dynamic allocation, so this is safe on this device even though it would
+     be a conflict under ISC dhcpd. UniFi permits fixed IPs inside the pool as well, so
+     rejecting them would fail valid dumps over a hazard that does not exist here. The
+     warning is worth printing because it is still untidy, and because a later pool change
+     is easier to reason about when reservations sit outside it.
+
+On subnet mismatch, print both remedies and write nothing:
+
+```
+error: subnet mismatch
+  host file:   192.168.4.0/24 (38 of 38 entries)
+  router LAN:  192.168.8.1/24
+
+Resolve by either:
+  - Setting the router's LAN address to 192.168.4.1/24, with
+    goglnet --set-ip 192.168.4.1 --set-mask 255.255.255.0 --set-start ... --set-end ...
+    or in the GL.iNet admin panel (LAN -> Router IP Address), then re-running. Your
+    management session will drop and you will need to reconnect at the new address.
+  - Renumbering the host file into 192.168.8.0/24 before re-running.
+```
+6. Refuse with `ErrDomainNotSet` if the host file carries no domain, naming
+   `goglps --domain <domain>` as the remedy. This happens before any write.
+7. Diff the **bindings**, keyed by MAC:
+   - **Skip if unchanged**: MAC already bound to the same IP. Print skip to stderr.
+   - **Update if changed**: MAC exists but the IP differs. Print update to stderr.
+   - **Create if new**: MAC has no existing binding. Print create to stderr.
+8. Diff the **names** independently, keyed by name, against the router's host file. A name that
+   is absent, or present with a different address, is written. The diff is separate because a
+   binding creates no DNS record: an entry whose binding already matches can still be missing
+   its name, and folding the two diffs together would suppress that.
+9. If `--prune`, delete bindings on the router whose MAC does not appear in the file, and remove
+   their names. Without `--prune`, extras are left alone and counted.
+10. Write: bindings one at a time, then every name change in a single `dns.set_host` call. The
+    batch is not an optimization -- that endpoint replaces the whole file, so per-name writes
+    would be one read-modify-write cycle each, racing one another.
+11. Print summary to stderr:
+    `N host declarations: N created, N updated, N skipped; N pruned; N DNS name(s) written, N removed; N errors`.
+12. Exit 1 if any errors occurred.
 
 ### Behavior: `--add` Mode
 
@@ -686,13 +777,19 @@ Behavior:
    - Is the IP already reserved for a different MAC?
    - Is the MAC already reserved a different IP?
    - Is another reservation already using this name?
-   - Is the IP inside the DHCP dynamic pool, outside the LAN subnet, or the router's own
-     address?
-4. Create or update the reservation.
-5. Print the result to stdout:
+   - Is the IP outside the LAN subnet, or the router's own address?
+
+   An IP inside the DHCP dynamic pool warns but is not a conflict, and `--force` is not
+   needed to proceed past it. See `--set` step 5 for why.
+4. Refuse with `ErrDomainNotSet` if no domain is configured, naming the remedy.
+5. Create or update the binding, then write the DNS name.
+6. Print the result to stdout:
    ```
    Created: mydevice aa:bb:cc:dd:ee:ff 192.168.8.50
+     DNS name mydevice.lab.example -> 192.168.8.50
    ```
+   If the binding is written and the name write then fails, say which half succeeded: the
+   difference determines whether the operator re-runs `--add` or repairs with `--set`.
 
 ### Behavior: `--del` Mode
 
@@ -707,13 +804,68 @@ Delete a host identified by one of `--name`, `--mac`, or `--ip`.
 4. If multiple matches found, list all matches and exit 1 unless `--force` is set.
 5. Display what will be deleted and ask for confirmation (unless stdout is not a terminal,
    in which case proceed without prompting).
-6. Delete the reservation. This removes the DHCP binding and the DNS name together; there
-   is no way to remove one and keep the other.
+6. Remove the DNS name first, then the binding. The order matters: a leftover binding is an
+   address with no name, which `--set` reports and repairs, while a leftover name keeps
+   resolving to an address nothing holds.
 7. Print the result to stdout:
    ```
    Deleted: mydevice aa:bb:cc:dd:ee:ff 192.168.8.50
-     Removed DHCP reservation and DNS name
+     Removed the DHCP reservation and its DNS name
    ```
+
+### Behavior: `--domain` Mode
+
+Set the DNS domain. Required before any reservation write.
+
+```bash
+goglps -H 192.168.8.1 --domain lab.example
+```
+
+Behavior:
+
+1. Validate the domain by the same rules as a hostname. Reject rather than escape: a quote in
+   the marker line would corrupt the host file, and the host file is what the router resolves
+   its own name from.
+2. Read the host file and note the existing domain, if any.
+3. Write the new domain into gogl's begin-marker line, and requalify every managed entry so no
+   name keeps the old suffix. Resolution split across two domains is worse than either.
+4. Report which of the three cases happened, because they have different consequences:
+   ```
+   DNS domain set to "lab.example"
+   DNS domain changed from "old.example" to "lab.example"; existing host entries requalified
+   DNS domain already "lab.example"
+   ```
+
+The domain lives on the router rather than in a config file, so it travels with the device. The
+firmware has no dnsmasq domain setting to use, and `/ubus` -- the standard OpenWrt route to one
+-- returns 404 on this model.
+
+### Behavior: `--clear` Mode
+
+Delete every reservation and every managed DNS name.
+
+```bash
+goglps -H 192.168.8.1 --clear
+goglps -H 192.168.8.1 --clear --dry-run
+```
+
+Behavior:
+
+1. List both the bindings and the managed host entries.
+2. If both are empty, print `nothing to clear` and exit 0. "Make sure there is nothing there"
+   is a reasonable request, so an empty device is a no-op rather than an error.
+3. Print every binding and every name that will go.
+4. With `--dry-run`, stop here.
+5. Confirm interactively unless `--force` or stdout is not a terminal.
+6. Remove the names first, then the bindings, for the reason given in `--del` step 6.
+7. Print `Deleted N reservations and N DNS names`.
+
+Both tables, because they are one intent stored in two places. The domain survives: it is
+configuration rather than content, and re-setting it after every clear would be a papercut with
+no purpose.
+
+This is also the precondition for `goglnet --set-*`, which refuses to renumber the LAN while
+any reservation exists.
 
 ### Error Handling
 
@@ -727,7 +879,7 @@ Delete a host identified by one of `--name`, `--mac`, or `--ip`.
 | Hostname fails name validation | Print error naming the offending character, exit 1 |
 | Duplicate hostname/MAC/IP in input file | Print all duplicates, exit 1 before connecting |
 | Any IP outside the LAN subnet | Print subnet mismatch report, exit 1 before writing |
-| IP inside the DHCP dynamic pool | Error per entry; warning with `--force` |
+| IP inside the DHCP dynamic pool | Warning to stderr, proceed; never an error |
 | Conflict on `--add` without `--force` | Print conflict details, exit 1 |
 | No match on `--del` | Print error, exit 1 |
 | Multiple matches on `--del` without `--force` | List matches, exit 1 |
@@ -749,8 +901,8 @@ utilities/
 
 ## goglnet Tool
 
-A command-line tool for reporting the travel router's LAN address, DHCP pool, and DNS
-settings. Lives in `utilities/goglnet/`. Built on the gogl module. The counterpart to
+A command-line tool for reporting the travel router's LAN address, DHCP pool, and the DNS
+resolvers it advertises to clients. Lives in `utilities/goglnet/`. Built on the gogl module. The counterpart to
 `gofinet`.
 
 ### Purpose
@@ -783,19 +935,24 @@ goglnet [connection flags] -j
 3. Fetch the reservation count via `client.Reservations().List()`.
 4. Fetch model and firmware version via `client.System().Info()`.
 5. Report: model, firmware, LAN address and netmask, subnet in CIDR form, DHCP enabled,
-   pool start and end, lease time, domain suffix, DNS servers, reservation count, and the
-   count of addresses in the subnet that are neither pooled nor reserved nor the router
-   itself.
+   pool start and end, lease time, DNS servers, reservation count, and the count of
+   addresses in the subnet that are neither pooled nor reserved nor the router itself.
 6. Output text or JSON (`-j`).
+7. With any of `--set-ip`, `--set-mask`, `--set-start`, `--set-end`, write the main LAN's
+   address and pool instead of reporting. Refused while reservations exist. Requires
+   `--yes` or an interactive confirmation, since it drops the session.
 
-Where the API exposes a guest network, its subnet is reported read-only, because it
-constrains address planning. `gogl` never writes it.
+The domain is not part of this. It lives in the host file and is `goglps --domain`, because
+the firmware has no domain setting to report or write.
+
+Where the API exposes a guest network, its subnet is reported, because it constrains address
+planning. `gogl` only ever writes the main LAN.
 
 ### Text Output Format
 
 ```
 MODEL       GL-SFT1200
-FIRMWARE    4.8.3
+FIRMWARE    4.3.28
 LAN         192.168.8.1/24  (255.255.255.0)
 DHCP        enabled
 POOL        192.168.8.100 - 192.168.8.249  (150 addresses)
@@ -1014,130 +1171,6 @@ utilities/
       DESIGN.md       # Detailed design document
 ```
 
-## goglsync Tool
-
-A command-line tool that applies a complete `gofi` dump to a travel router in one
-operation. Lives in `utilities/goglsync/`. Built on the gogl module. It has no `gofi`
-counterpart; it is the tool that makes the two modules useful together.
-
-### Purpose
-
-`goglps --set` handles the host bindings, but a dump also carries the network shape: pool
-boundaries, lease time, DNS servers, domain suffix. `goglsync` applies both, in the right
-order, with one plan and one report. It is the single command that answers "make this
-travel router behave like my home network."
-
-### CLI Interface
-
-```
-goglsync [connection flags] --net <file> --hosts <file> [--dry-run]
-goglsync [connection flags] --hosts <file>
-```
-
-### Flags
-
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--net` | `-N` | Network shape, as produced by `gofinet -j` |
-| `--hosts` | `-f` | Host bindings, as produced by `gofips --get` |
-| `--dry-run` | n/a | Print the full plan and exit without writing |
-| `--prune` | `-P` | Delete reservations on the router that are absent from the host file |
-| `--yes` | `-y` | Skip the confirmation prompt |
-
-At least one of `--net` or `--hosts` is required. Given only `--hosts`, `goglsync`
-behaves as `goglps --set` plus the fidelity report.
-
-### Behavior
-
-1. Parse both input files completely before connecting. A `gofinet -j` array containing
-   more than one LAN-purpose network is an error: v1 handles a single flat network, and
-   silently picking one of several would be a guess.
-2. Validate the host file exactly as `goglps --set` does.
-3. Connect to the router and fetch current LAN config, reservations, and system info.
-4. **Reconcile subnets.** If the dump's subnet differs from the router's LAN subnet, print
-   the subnet mismatch report (see [Subnet Mismatch](#subnet-mismatch)) and exit 1 without
-   writing anything.
-5. Build a plan: every setting to change and every reservation to create, update, prune,
-   or skip, plus every item in the dump that cannot be reproduced.
-6. Print the plan. If `--dry-run`, exit 0 here.
-7. Unless `--yes`, prompt for confirmation. If stdout is not a terminal, `--yes` is
-   required rather than assumed; a sync is a bulk write and should not happen by accident
-   in a pipeline.
-8. Apply network settings first, then reservations. Network settings first because a pool
-   change can free an address that a reservation needs.
-9. Print the fidelity report and summary.
-
-The router's LAN address is never written, in any mode. That is the one change `goglsync`
-will not make.
-
-### Plan Output
-
-```
-plan for GL-SFT1200 at 192.168.8.1 (firmware 4.8.3)
-
-network:
-  dhcp pool     192.168.8.100-192.168.8.249  ->  192.168.8.100-192.168.8.189
-  lease time    12h                          ->  24h
-  dns servers   192.168.8.1                  ->  1.1.1.1, 8.8.8.8
-  domain        lan                          ->  unchanged
-
-reservations:
-  create   myserver     aa:bb:cc:dd:ee:01  192.168.8.10
-  update   printer      aa:bb:cc:dd:ee:02  192.168.8.11  (was 192.168.8.12)
-  skip     nas          aa:bb:cc:dd:ee:03  192.168.8.13  (unchanged)
-  prune    oldlaptop    aa:bb:cc:dd:ee:99  192.168.8.44  (absent from host file)
-
-not reproduced:
-  dhcpd_dns_3, dhcpd_dns_4    router accepts 2 DNS servers; 3rd and 4th dropped
-  igmp_snooping               no API equivalent
-  mdns_enabled                no API equivalent
-
-37 host declarations: 12 create, 3 update, 22 skip
-1 router reservation pruned
-3 network settings change
-3 dump fields not reproduced
-```
-
-Host-file counts and router-side counts are reported on separate lines because they count
-different things: `create`/`update`/`skip` partition the declarations in the file, while
-`prune` counts reservations that exist only on the router. Summing them would be
-meaningless.
-
-### Fidelity Report
-
-The `not reproduced` section is not optional output and is not suppressible. Every field
-present in the dump that `gogl` did not write appears there with the reason. A sync that
-reproduces everything prints `not reproduced: nothing`. The report is what makes the lossy
-projection honest: you always know what your travel router is not doing.
-
-### Error Handling
-
-| Condition | Behavior |
-|-----------|----------|
-| Neither `--net` nor `--hosts` given | Print usage, exit 1 |
-| Input file unreadable or malformed | Print error with file and line, exit 1 |
-| `--net` file contains more than one LAN network | Print the networks found, exit 1 |
-| Subnet mismatch between dump and router | Print both remedies, exit 1 before writing |
-| Host file validation failure | Print all errors, exit 1 before connecting |
-| Not a terminal and `--yes` absent | Print error, exit 1 |
-| Network settings write failure | Print error, exit 1 without touching reservations |
-| Individual reservation failure | Print error to stderr, continue, exit 1 at end |
-
-### Project Layout
-
-```
-utilities/
-  goglsync/
-    main.go           # Entry point, flag parsing
-    dump.go           # gofinet -j and gofips ISC DHCP input parsing
-    plan.go           # Diff current state against desired state
-    apply.go          # Ordered application of the plan
-    report.go         # Plan output and fidelity report
-  docs/
-    goglsync/
-      DESIGN.md       # Detailed design document
-```
-
 ## Commands
 
 ```bash
@@ -1148,7 +1181,9 @@ make coverage  # Generate coverage report
 make install   # Install utilities to ~/bin (override INSTALL_DIR)
 ```
 
-`UTILITIES := goglmac goglnet goglps goglsync`
+`UTILITIES := goglmac goglnet goglps`
+
+Which mirrors `gofi`'s `UTILITIES := gofimac gofinet gofips` one-for-one.
 
 ## Reference Implementations
 
