@@ -60,7 +60,8 @@ a kit's network is reproducible from a commit rather than from memory.
 | Reservations (MAC to IP) | yes | **yes**, individually or cleared wholesale |
 | DNS names (host file) | yes | **yes** |
 | DNS domain (in gogl's host-file block) | yes | **yes** |
-| LAN address, netmask, DHCP pool | yes | **yes**, only with no reservations present |
+| DHCP pool alone | yes | **yes**, never guarded: nothing moves |
+| LAN address or netmask | yes | **yes**, refused while reservations exist unless forced |
 | DHCP leases | yes | no, the router owns these |
 | Connected clients | yes | no |
 | Model, firmware, uptime | yes | no |
@@ -97,8 +98,10 @@ stateDiagram-v2
 
     Factory --> Factory: Network().Set() ok
     DomainSet --> DomainSet: Network().Set() ok
+    Populated --> Populated: pool-only Set() ok
+    Populated --> Populated: Set(WriteForced) ok
 
-    Populated --> Refused1: Network().Set()
+    Populated --> Refused1: subnet move, WriteGuarded
     Refused1 --> Populated: ErrReservationsExist
     Factory --> Refused2: Reservations().Create()
     Refused2 --> Factory: ErrDomainNotSet

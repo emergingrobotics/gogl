@@ -1052,20 +1052,32 @@ goglnet [connection flags] -j
 5. Report: model, firmware, LAN address and netmask, subnet in CIDR form, DHCP enabled,
    pool start and end, lease time, DNS servers, reservation count, and the count of
    addresses in the subnet that are neither pooled nor reserved nor the router itself.
+   Also list any reservation whose address falls inside the DHCP pool: dnsmasq honors those and
+   excludes them from allocation, so nothing is broken, but they are missing from the available
+   count and the discrepancy is otherwise unexplainable. They arise by accident -- a subnet move
+   put twenty of twenty-seven inside the pool on real hardware, because the firmware rewrites
+   host parts without regard to where the pool is.
 6. Output text or JSON (`-j`).
-7. With any of `--set-ip`, `--set-mask`, `--set-start`, `--set-end`, write the main LAN's
-   address and pool instead of reporting. Refused while reservations exist. Requires
-   `--yes` or an interactive confirmation, since it drops the session.
+7. With `--set-start` and `--set-end` alone, write the DHCP pool. The address and netmask are
+   read from the device. Never refused, and the session survives: nothing moves.
+8. With `--set-ip` and `--set-mask` (which require both pool bounds too), move the subnet.
+   Refused while reservations exist unless `--force`; the session drops. Warn when the new pool
+   would enclose existing reservations.
 
-8. Report each wireless interface: band, interface name, SSID, encryption, guest flag, hidden
+   Unlike a wireless write, this has no `y/N` gate -- only `--dry-run`. The asymmetry is
+   deliberate but arguable: a wireless change can leave the device unreachable with no address
+   to try, while a moved router is reachable at an address `goglnet` prints. If that reasoning
+   stops holding, add the prompt here rather than removing it there.
+
+9. Report each wireless interface: band, interface name, SSID, encryption, guest flag, hidden
    and enabled state. The passphrase is masked unless `--show-key` is given.
-9. Report what each radio advertises: selectable channels with DFS marked, bandwidths,
+10. Report what each radio advertises: selectable channels with DFS marked, bandwidths,
    hardware modes, encryptions, and the transmit-power levels.
-10. Write wireless identity with `--set-ssid`, `--set-key`, `--set-encryption`,
+11. Write wireless identity with `--set-ssid`, `--set-key`, `--set-encryption`,
     `--set-hidden=true|false`, `--set-enabled=true|false`, each requiring `--iface`.
-11. Write radio tuning with `--set-channel`, `--set-htmode`, `--set-hwmode`, `--set-txpower`,
+12. Write radio tuning with `--set-channel`, `--set-htmode`, `--set-hwmode`, `--set-txpower`,
     each requiring `--device`.
-12. Refuse any wireless write when the session arrives over WiFi, and confirm with `y/N`
+13. Refuse any wireless write when the session arrives over WiFi, and confirm with `y/N`
     unless `--yes`. Warn when the chosen channel is a DFS channel. See
     [Wireless Writes](#wireless-writes).
 

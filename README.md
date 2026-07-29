@@ -339,10 +339,16 @@ with what it supports. With any `--set-*` flag, writes.
 
 #### Reporting
 
+| Flag | Short | What it does |
+|------|-------|--------------|
+| *(none)* | | Report the LAN, pool, reservation counts, and every radio |
+| `--json` | `-j` | JSON instead of text |
+| `--show-key` | | Print WiFi passphrases instead of masking them |
+
 ```bash
-goglnet                # text
-goglnet -j             # JSON
-goglnet --show-key     # include WiFi passphrases instead of masking them
+goglnet
+goglnet -j
+goglnet --show-key
 ```
 
 If any reservation sits inside the DHCP pool, the report says so and lists them:
@@ -404,6 +410,7 @@ and guessing a replacement would be worse than asking.
 | `--set-end` | DHCP pool end |
 | `--set-interface` | `lan` (default) or `guest` |
 | `--force` | Proceed despite existing reservations |
+| `--dry-run` | Show the change and any refusal, without writing |
 
 ```bash
 goglnet --set-ip 192.168.8.1 --set-mask 255.255.255.0 \
@@ -815,33 +822,62 @@ lines the router relies on.
 ### Writing the network
 
 ```go
+// Moving the subnet. Refused while reservations exist; pass services.WriteForced to
+// accept the firmware rewriting them into the new subnet.
 err := client.Network().Set(ctx, &types.Network{
     Interface: types.InterfaceLAN,
     LANIP:     "192.168.2.1",
     Netmask:   "255.255.255.0",
     DHCPStart: "192.168.2.100",
     DHCPStop:  "192.168.2.149",
-})
+}, services.WriteGuarded)
 ```
 
-Returns `ErrReservationsExist` if any reservation is present. The pool is checked against the
-new subnet first: the firmware accepts a pool outside it and then silently hands out nothing.
+The third argument is a `services.WriteMode`, named rather than a bool so the call site says
+what it does: `WriteGuarded` refuses a subnet move while reservations exist, `WriteForced`
+proceeds. Forcing waives the guard, never the validation.
 
-Expect the call to fail with a lost connection *on success* — the router moves to the new
-address mid-request. `goglnet` treats that as expected and tells you where to reconnect.
+A pool-only change is never guarded, because nothing moves — but the firmware takes all four
+fields in one call, so read the current address and mask and pass them through:
+
+```go
+current, err := client.Network().Get(ctx)
+if err != nil {
+    return err
+}
+current.DHCPStart, current.DHCPStop = "192.168.2.50", "192.168.2.150"
+err = client.Network().Set(ctx, current, services.WriteGuarded)
+```
+
+The pool is checked against the subnet first: the firmware accepts a pool outside it and then
+silently hands out nothing.
+
+When the subnet *does* move, expect the call to fail with a lost connection *on success* — the
+router changes address mid-request. `goglnet` treats that as expected and tells you where to
+reconnect. A pool-only change has no such problem.
 
 ### Errors
 
 ```go
 switch {
 case errors.Is(err, gogl.ErrDomainNotSet):      // set a domain before writing reservations
-case errors.Is(err, gogl.ErrReservationsExist): // clear reservations before changing the network
+case errors.Is(err, gogl.ErrReservationsExist): // clear them, or pass services.WriteForced
 case errors.Is(err, gogl.ErrNotFound):
 case errors.Is(err, gogl.ErrConflict):        // MAC already reserved
 case errors.Is(err, gogl.ErrInvalidName):     // name would be unsafe in dnsmasq config
+case errors.Is(err, gogl.ErrInvalidMAC):
+case errors.Is(err, gogl.ErrInvalidIP):
+case errors.Is(err, gogl.ErrLoginRateLimited):   // locked out; the message carries the wait
 case errors.Is(err, gogl.ErrOutsideSubnet):
 case errors.Is(err, gogl.ErrUnauthorized):
+case errors.Is(err, gogl.ErrWirelessSession):    // wireless write over a wireless session
+case errors.Is(err, gogl.ErrUnwritableContent):  // host file holds a character set_host rejects
+case errors.Is(err, gogl.ErrInvalidInput):       // SSID, passphrase, channel, bandwidth
 }
+
+// ErrSessionExpired, ErrNonceExpired, ErrUnsupportedAlgorithm and
+// ErrUnsupportedHashMethod are exported for inspection but handled inside the
+// transport: a caller normally never sees them.
 
 var rpcErr *gogl.RPCError
 if errors.As(err, &rpcErr) {

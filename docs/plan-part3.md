@@ -21,6 +21,14 @@
 >    replace the old "read-only everything else" rule.
 > 3. **Endpoint names were guessed.** `dhcp.*` does not exist on this device; the real groups are
 >    `lan.*` and `dns.*`. Every group and method constant below should be read as provisional.
+> 4. **Wireless was out of scope and now is not.** `goglnet` writes SSIDs, passphrases,
+>    encryption, hidden and enabled state, plus channel, bandwidth, hardware mode and transmit
+>    power -- guarded so that no wireless write happens over a wireless session.
+> 5. **Field shapes taken from the vendored API description were wrong more than once.**
+>    `dns.set_host` rejects `(`, `)` and `=` anywhere in the file, which broke every host-file
+>    write; `wifi.get_config` sends `htmodes` as an object rather than an array, which broke
+>    every wireless read. Both were typed from the description rather than a capture. Fixtures
+>    are now verbatim captures, with tests asserting they decode through the library's own types.
 >
 > The plan's *method* held up: mock first, transport second, one transparent retry, no hardware
 > in the test suite. It was the API assumptions that did not survive contact.
