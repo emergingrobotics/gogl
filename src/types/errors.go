@@ -34,8 +34,17 @@ var (
 
 	// ErrReservationsExist means a network change was refused because reservations
 	// are still present. Renumbering the LAN under live reservations would leave
-	// every one of them pointing outside the new subnet.
+	// every one of them into the new subnet without saying so; see NetworkService.Set.
 	ErrReservationsExist = errors.New("gogl: reservations exist")
+
+	// ErrInvalidInput means a caller-supplied value is unfit to write. Distinct from
+	// the field-specific sentinels, for values with no sentinel of their own.
+	ErrInvalidInput = errors.New("gogl: invalid input")
+
+	// ErrWirelessSession means a wireless write was refused because the session
+	// issuing it arrives over WiFi, and applying it would sever that session with no
+	// address to reconnect at.
+	ErrWirelessSession = errors.New("gogl: refusing to change wireless over a wireless session")
 
 	// ErrUnwritableContent means host-file content contains a character the
 	// firmware's dns.set_host refuses. It reports -32602 Invalid params without

@@ -10,8 +10,15 @@ import (
 
 	gogl "github.com/emergingrobotics/gogl/src"
 
+	"github.com/emergingrobotics/gogl/src/services"
 	"github.com/emergingrobotics/gogl/src/types"
 )
+
+// networkModes are the flags governing a LAN write.
+type networkModes struct {
+	dryRun bool
+	force  bool
+}
 
 // Report is the flattened view goglnet prints. JSON tags define the -j output
 // contract.
@@ -35,6 +42,16 @@ type Report struct {
 
 	ReservedCount  int `json:"reserved_count"`
 	AvailableCount int `json:"available_count"`
+
+	// InPool are reservations whose address falls inside the DHCP pool.
+	//
+	// Reported because it is invisible otherwise and arises by accident: a LAN
+	// renumber moved 20 of 27 reservations into the pool on a real device, silently,
+	// because the firmware rewrites host parts without considering the pool. dnsmasq
+	// honors them and excludes them from allocation, so nothing is broken -- but they
+	// are missing from AvailableCount, and an operator counting free addresses is
+	// otherwise left to work out why the numbers do not add up.
+	InPool []types.Reservation `json:"in_pool,omitempty"`
 }
 
 // The three narrow interfaces below exist so buildReport can be tested with stubs
@@ -86,6 +103,7 @@ func buildReport(ctx context.Context, nets networkGetter, sys systemInfoer, res 
 	}
 
 	report.AvailableCount = countAvailable(network, reservations)
+	report.InPool = reservationsInPool(network, reservations)
 	return report, nil
 }
 
@@ -138,15 +156,32 @@ func countAvailable(network *types.Network, reservations []types.Reservation) in
 // runSetNetwork writes a new address and pool to the router.
 //
 // Two things make this unlike every other write in gogl. It is refused while
-// reservations exist, because renumbering underneath them leaves each one pointing
-// outside the new subnet. And it moves the router to a different address, so the
+// reservations exist -- not because they would be stranded, which is what that guard
+// was written for and is wrong, but because the firmware rewrites every one of them
+// silently; see NetworkService.Set. And it moves the router to a different address, so the
 // call cannot report success in the usual way: the connection dies as the change
 // takes effect. dryRun runs every check and prints the same summary, but stops
 // short of the write.
-func runSetNetwork(ctx context.Context, client *gogl.Client, n *types.Network, dryRun bool) error {
+func runSetNetwork(ctx context.Context, client *gogl.Client, n *types.Network, modes networkModes) error {
 	current, err := client.Network().Get(ctx)
 	if err != nil {
 		return err
+	}
+
+	// Fill in whatever was not asked for. A pool-only change is the common case and
+	// should not require restating an address that is not moving -- but the firmware
+	// takes all four fields in one call, so they have to come from somewhere.
+	if n.LANIP == "" {
+		n.LANIP = current.LANIP
+	}
+	if n.Netmask == "" {
+		n.Netmask = current.Netmask
+	}
+	if n.DHCPStart == "" {
+		n.DHCPStart = current.DHCPStart
+	}
+	if n.DHCPStop == "" {
+		n.DHCPStop = current.DHCPStop
 	}
 
 	// The same validation the write performs, so a dry run cannot approve what
@@ -159,33 +194,83 @@ func runSetNetwork(ctx context.Context, client *gogl.Client, n *types.Network, d
 		return err
 	}
 
-	// Check the blocking condition before announcing the change. Printing "the
-	// router will move" and then refusing reads as a failed write rather than a
-	// refused one.
+	moving := n.LANIP != current.LANIP || n.Netmask != current.Netmask
+
 	existing, err := client.Reservations().List(ctx)
 	if err != nil {
 		return err
 	}
-	if len(existing) > 0 {
+
+	// Check the blocking condition before announcing the change. Printing "the
+	// router will move" and then refusing reads as a failed write rather than a
+	// refused one.
+	if moving && len(existing) > 0 && !modes.force {
 		return fmt.Errorf("%w: %d reservation(s) present\n"+
-			"  renumbering now would leave every one of them outside %s, present but inert\n"+
-			"  clear them first:  goglps --clear",
+			"  the firmware would silently rewrite all of them into %s, keeping host parts\n"+
+			"  that is usually what you want, but it is unannounced, and untested for a\n"+
+			"  netmask change or a move that lands addresses inside the new DHCP pool\n"+
+			"  clear them first:      goglps --clear\n"+
+			"  or accept the rewrite: goglnet --force ...",
 			types.ErrReservationsExist, len(existing), subnet)
 	}
 
-	fmt.Fprintf(os.Stderr, "interface %s: %s/%s -> %s (%s)\n",
-		n.Interface, current.LANIP, current.Netmask, n.LANIP, subnet)
-	fmt.Fprintf(os.Stderr, "pool: %s-%s -> %s-%s\n",
-		current.DHCPStart, current.DHCPStop, n.DHCPStart, n.DHCPStop)
-	if dryRun {
+	if moving {
+		fmt.Fprintf(os.Stderr, "interface %s: %s/%s -> %s (%s)\n",
+			n.Interface, current.LANIP, current.Netmask, n.LANIP, subnet)
+	} else {
+		fmt.Fprintf(os.Stderr, "interface %s: staying at %s (%s)\n",
+			n.Interface, current.LANIP, subnet)
+	}
+	if n.DHCPStart != current.DHCPStart || n.DHCPStop != current.DHCPStop {
+		fmt.Fprintf(os.Stderr, "pool: %s-%s -> %s-%s\n",
+			current.DHCPStart, current.DHCPStop, n.DHCPStart, n.DHCPStop)
+	}
+
+	// Reservations the new pool will enclose. dnsmasq honors a static bind inside the
+	// dynamic range and excludes that address from allocation, so this works -- but it
+	// happened silently to 20 of 27 reservations on a real renumber, and an operator
+	// counting free addresses deserves to be told.
+	if enclosed := reservationsInPool(n, existing); len(enclosed) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"warning: %d reservation(s) will fall inside the new pool %s-%s\n",
+			len(enclosed), n.DHCPStart, n.DHCPStop)
+		for _, r := range enclosed {
+			fmt.Fprintf(os.Stderr, "  %s %s\n", r.IP, r.Name)
+		}
+		fmt.Fprintln(os.Stderr,
+			"  dnsmasq honors these and excludes them from dynamic allocation, so they work;")
+		fmt.Fprintln(os.Stderr,
+			"  they are simply not counted as available.")
+	}
+
+	if moving && len(existing) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"the firmware will rewrite %d reservation(s) into %s, keeping host parts.\n",
+			len(existing), subnet)
+	}
+	if modes.dryRun {
 		fmt.Fprintln(os.Stderr, "dry run: nothing was changed")
+		return nil
+	}
+
+	mode := services.WriteGuarded
+	if modes.force {
+		mode = services.WriteForced
+	}
+
+	if !moving {
+		// No address change, so no dropped session and nothing to warn about.
+		if err := client.Network().Set(ctx, n, mode); err != nil {
+			return err
+		}
+		fmt.Printf("pool set: %s-%s on %s\n", n.DHCPStart, n.DHCPStop, n.Interface)
 		return nil
 	}
 
 	fmt.Fprintln(os.Stderr,
 		"the router will move to the new address; this session will drop")
 
-	if err := client.Network().Set(ctx, n); err != nil {
+	if err := client.Network().Set(ctx, n, mode); err != nil {
 		// A dropped connection here is the expected outcome of success, not a
 		// failure, and saying so saves the operator a diagnosis.
 		if errors.Is(err, context.DeadlineExceeded) || isConnectionLost(err) {
@@ -201,6 +286,21 @@ func runSetNetwork(ctx context.Context, client *gogl.Client, n *types.Network, d
 		n.LANIP, n.Interface, n.DHCPStart, n.DHCPStop)
 	fmt.Fprintf(os.Stderr, "reconnect with -H %s\n", n.LANIP)
 	return nil
+}
+
+// reservationsInPool returns the reservations whose address falls inside n's pool.
+func reservationsInPool(n *types.Network, reservations []types.Reservation) []types.Reservation {
+	var enclosed []types.Reservation
+	for _, r := range reservations {
+		ip := net.ParseIP(r.IP)
+		if ip == nil {
+			continue
+		}
+		if pooled, err := n.InDHCPPool(ip); err == nil && pooled {
+			enclosed = append(enclosed, r)
+		}
+	}
+	return enclosed
 }
 
 // isConnectionLost reports whether err looks like the router going away mid-call,

@@ -78,12 +78,16 @@ where every method is marked verified, absent, or untested.
   exposes no dnsmasq domain setting. Required before any reservation write.
 - **DHCP leases** - read-only, and the way to discover what is worth reserving.
 - **Connected clients** - with independent IEEE OUI manufacturer lookup.
+- **Wireless identity** - SSID, passphrase, encryption, hidden and enabled state, per
+  interface. Read and **written**.
+- **Radio tuning** - channel, bandwidth, hardware mode, transmit power, per radio. Read and
+  **written**. Both under the safety rules in [Wireless Writes](#wireless-writes).
 
 Explicitly **out of scope for v1**:
 
-- **Wireless configuration.** SSIDs, passphrases, and radio settings are managed through the
-  GL.iNet admin panel. `gogl` never writes them. Writing wireless config over a wireless
-  management session is a good way to lock yourself out of the device.
+- **Nothing in the wireless stack.** Radio tuning was excluded on the grounds that it is
+  tuning rather than provisioning; that was wrong for a travel router, where the channel a
+  site's existing WiFi occupies is exactly the thing you need to move off.
 - **VLANs.** The Opal exposes no VLAN configuration through its API.
 - **Guest network writes.** Reported by `goglnet` for address planning; `lan.set_config` can
   address it, but v1 only ever writes the main LAN.
@@ -111,18 +115,30 @@ address with no name and nothing to indicate that was unintended -- you find out
 something cannot resolve. Making the domain a precondition forces the pairing to be
 deliberate. Reads and deletes are ungated: only writes that create addressing are.
 
-### A network change requires no reservations
+### Moving the subnet requires no reservations, unless forced
 
-`Network().Set` returns `ErrReservationsExist` while any reservation is present.
+`Network().Set` returns `ErrReservationsExist` while any reservation is present, unless called
+with `WriteForced`.
 
-Renumbering the LAN underneath live reservations leaves every one of them outside the new
-subnet: still listed in the admin panel, silently inert, and easy to miss for a long time.
-Clear them, apply the new network, then import the addresses you want.
+The original reason was wrong and is worth recording. It was written expecting the firmware to
+leave static binds alone, stranding all of them outside the new subnet. Observed on hardware
+2026-07-29: the firmware silently renumbers every bind into the new subnet, preserving host
+parts. Twenty-seven reservations moved from `192.168.2.x` to `192.168.8.x` with no prompt.
+
+The guard is kept on narrower grounds. An unannounced rewrite of every reservation is a large
+side effect of an address flag, and the behavior is only characterized for a same-size subnet:
+a narrower netmask, where a host part no longer fits, is untested, as is a move that lands
+addresses inside the new DHCP pool -- which happened to twenty of those twenty-seven. `--force`
+exists because the rewrite is usually what the operator wants.
+
+**A pool-only change is never guarded.** The subnet does not move, so the session survives and
+no reservation can be renumbered by it. Guarding it would be guarding against something that
+cannot happen. Only a change to the address or the netmask counts as moving the subnet.
 
 The correct order is therefore:
 
 1. `goglps --domain <domain>`
-2. `goglps --clear` if reservations already exist
+2. `goglps --clear` if reservations already exist, or pass `--force` in step 3
 3. `goglnet --set-ip ... --set-mask ... --set-start ... --set-end ...`
 4. `goglps --set <file>`
 
@@ -135,6 +151,105 @@ intent stored in two tables. Clearing only the bindings would leave names resolv
 addresses the router no longer reserves, and since clearing is what unblocks step 3, those
 names would end up answering for a subnet that no longer exists — exactly the stranded state
 the guard exists to prevent. The domain from step 1 survives a clear.
+
+## Wireless Writes
+
+Reproducing a network means reproducing what devices connect *to*, not only what addresses they
+receive. A signage player or robot configured for a given SSID does not care that the DHCP
+reservations are right if it cannot associate. So `gogl` writes wireless identity: SSID,
+passphrase, hidden flag, and enabled flag, per interface.
+
+This was out of scope in v1 for a reason that has not gone away, so the reason becomes a
+guard rather than a prohibition.
+
+### The lock-yourself-out problem
+
+Changing an SSID or passphrase drops every client on that radio, including the session issuing
+the request. Unlike a LAN renumber, there is no new address to reconnect at: the network the
+management session was using has ceased to exist under that name. Recovery means ethernet or
+the reset pin.
+
+These rules apply to **every** wireless write, tuning included. Retuning a radio drops its
+clients for at least a re-association, and a DFS channel change for the minutes the radio
+spends re-scanning, so the distinction between "identity" and "tuning" does not matter to
+whoever loses their session.
+
+Two rules:
+
+1. **The session must not be arriving over WiFi.** `gogl` determines the local address it
+   reaches the router from, finds that address in `client.get_list`, and reads the `iface`
+   field the firmware reports for it -- `cable`, `2.4G` or `5G`. Anything but `cable` is
+   refused with `ErrWirelessSession`.
+
+   If the address is not in the client list at all, the session is arriving from off-LAN
+   through a router, so the radio cannot be the path. That is allowed, and noted.
+
+   A stricter reading would refuse only when the session arrives over the *same* radio being
+   modified, since changing the 2.4G SSID from a 5G association is safe. That refinement is
+   deliberately not in this version: the simple rule is the one that cannot be got wrong, and
+   the cost of it is having to plug in a cable.
+
+2. **A human must confirm.** Interactive invocations prompt `y/N` and show the before and
+   after. `--yes` skips the prompt for scripted use, and a non-terminal stdout does not
+   silently proceed -- unlike `--del`, where proceeding is the safe assumption. Here the
+   failure mode is losing the device, so the default is to stop.
+
+### Partial updates, and why the flags look the way they do
+
+`wifi.set_config` leaves any field it is not given alone, and `gogl` sends only the fields
+asked for. Sending the unchanged values back would work, but would turn every write into a
+chance to clobber a concurrent edit from the admin panel.
+
+That requires telling "set this to false" apart from "do not mention it", which Go's `flag`
+package cannot do: both leave a `*bool` at `false`. So the wireless flags take an explicit
+value -- `--set-hidden=false`, not a bare `--set-hidden`. A bare boolean flag meaning true is
+exactly how `--set-enabled` ends up disabling something.
+
+The same applies to `--set-channel=0`, where 0 is a real value meaning "choose
+automatically" and so cannot double as a not-set sentinel.
+
+### The firmware scopes writes two ways
+
+Interface-scoped fields -- SSID, passphrase, encryption, hidden, enabled -- require
+`iface_name`. Radio-scoped fields -- channel, bandwidth, hardware mode, transmit power --
+require `device`. A write carrying both goes out as two calls, because that is how the
+firmware separates them, and because a failure then names which half did not apply.
+
+`goglnet` reports what each radio advertises as supported: its channels with the DFS ones
+marked, its bandwidths, its hardware modes, its encryptions. Without that the tuning flags are
+unusable, since the valid values differ per radio and per regulatory domain. `gogl` validates
+against those lists before writing, so a bad channel is refused with the available ones named
+rather than answered with a bare error code.
+
+### The capability payload is not what the docs say
+
+`htmodes` is the field to be careful with. GL.iNet's description calls it a "List of supported
+bandwidths", an array of strings; the device sends an object keyed by hardware mode whose values
+are the maximum channel width in MHz, plus an `auto` key holding a bool:
+
+```json
+"htmodes": {"11b/g/n": 40, "11g/n": 40, "11n": 40, "auto": true}
+```
+
+Typing it from the description made every read of `wifi.get_config` fail outright. `hwmodes` was
+wrong too -- slash-joined combinations such as `11a/n/ac`, not the bare `11b`/`11g`/`11n` the
+description implies -- and the encryption list contains `sae` and `sae-mixed` for WPA3 while
+containing no bare `psk`.
+
+Two consequences for the design. The settable `htmode` is a width string (`auto`, `20`, `40`,
+`80`), and the narrower widths are *inferred* to be valid from the reported maximum, since the
+firmware states only the maximum. And `src/mock`'s wireless fixture is a verbatim capture rather
+than a composed example, with a test asserting it decodes through the same types the library
+uses -- the check whose absence let a fixture and a type agree with each other while both
+disagreed with the hardware.
+
+### The passphrase is readable, and that is accepted
+
+`wifi.get_config` and `system.get_status` both return passphrases in cleartext over plain HTTP
+on port 80. Reading them requires being on the router's network and holding the admin password,
+which is the same bar as opening the admin panel, so this is not treated as a defect to work
+around. `gogl` does not log the raw payloads, and `goglnet` masks the key in its own output
+unless asked for it, because a passphrase on a terminal is a passphrase in a scrollback buffer.
 
 ## Concurrency Requirements
 
@@ -942,8 +1057,24 @@ goglnet [connection flags] -j
    address and pool instead of reporting. Refused while reservations exist. Requires
    `--yes` or an interactive confirmation, since it drops the session.
 
+8. Report each wireless interface: band, interface name, SSID, encryption, guest flag, hidden
+   and enabled state. The passphrase is masked unless `--show-key` is given.
+9. Report what each radio advertises: selectable channels with DFS marked, bandwidths,
+   hardware modes, encryptions, and the transmit-power levels.
+10. Write wireless identity with `--set-ssid`, `--set-key`, `--set-encryption`,
+    `--set-hidden=true|false`, `--set-enabled=true|false`, each requiring `--iface`.
+11. Write radio tuning with `--set-channel`, `--set-htmode`, `--set-hwmode`, `--set-txpower`,
+    each requiring `--device`.
+12. Refuse any wireless write when the session arrives over WiFi, and confirm with `y/N`
+    unless `--yes`. Warn when the chosen channel is a DFS channel. See
+    [Wireless Writes](#wireless-writes).
+
 The domain is not part of this. It lives in the host file and is `goglps --domain`, because
 the firmware has no domain setting to report or write.
+
+Wireless lives in `goglnet` rather than a fourth utility because it is network configuration,
+and because the three-tool mirror of `gofi` is worth more than a tidier separation. `goglnet`
+is the tool that reports and writes what the network *is*; an SSID is part of that.
 
 Where the API exposes a guest network, its subnet is reported, because it constrains address
 planning. `gogl` only ever writes the main LAN.

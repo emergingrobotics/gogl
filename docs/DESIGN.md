@@ -66,7 +66,9 @@ a kit's network is reproducible from a commit rather than from memory.
 | Model, firmware, uptime | yes | no |
 | Lease time, upstream DNS servers | yes | no, no verified endpoint |
 | dnsmasq `domain` / `expandhosts` | no | no, no endpoint and `/ubus` is 404 |
-| Wireless, VLANs, VPN, firewall | no | no |
+| Wireless identity (SSID, key, encryption, hidden, enabled) | yes | **yes**, only over a wired session |
+| Radio tuning (channel, bandwidth, hw mode, power) | yes | **yes**, only over a wired session |
+| VLANs, VPN, firewall | no | no |
 
 The first version of this design made "reservations are the only thing gogl writes" a
 structural rule, on the argument that it removed the transactional problem entirely. Two
@@ -110,8 +112,15 @@ only writes that create addressing are.
 
 **A network write requires no reservations.** `Network().Set` lists reservations first and
 returns `types.ErrReservationsExist`, including the count, because "clear them" is not
-actionable without "how many". Renumbering the LAN under live reservations leaves all of them
-stranded outside the new subnet: still present, silently inert.
+actionable without "how many".
+
+The reason was wrong. This guard was written expecting the firmware to strand reservations
+outside the new subnet. Observed 2026-07-29: it silently renumbers them, preserving host parts —
+27 reservations moved from `192.168.2.x` to `192.168.8.x` with no prompt. The guard is kept
+because an unannounced rewrite of every reservation is still a large side effect of an address
+flag, and because the behavior is only known for a same-size subnet: a narrower netmask, or a
+move that lands addresses inside the new pool, is untested. Twenty of those 27 landed in the
+pool.
 
 `Set` also validates before it writes, because the firmware will accept a pool outside its own
 subnet and simply stop serving addresses, with no error to explain it.
@@ -711,14 +720,18 @@ type NetworkService interface {
 
 	// Set writes an interface's address and DHCP pool.
 	//
-	// Refused with ErrReservationsExist while any reservation is present:
-	// renumbering the LAN underneath live reservations would leave every one of
-	// them pointing outside the new subnet, inert and easy to miss. Clear them
-	// first.
+	// A change that moves the subnet is refused with ErrReservationsExist while any
+	// reservation is present, unless mode is WriteForced. The firmware silently
+	// renumbers every bind into the new subnet rather than stranding them, which is
+	// not what that guard was designed against; see the correction on
+	// networkService.Set.
 	//
-	// This changes the address the router is being managed at, so the calling
-	// session will not survive it.
-	Set(ctx context.Context, n *types.Network) error
+	// A pool-only change is never guarded and never drops the session: the router
+	// keeps its address, so no reservation moves.
+	//
+	// Moving the subnet changes the address the router is managed at, so the calling
+	// session will not survive that case.
+	Set(ctx context.Context, n *types.Network, mode WriteMode) error
 }
 
 // HostsService manages DNS names through the router's hosts file.
@@ -787,6 +800,41 @@ type ReservationService interface {
 	// operation that can discard a whole network's addressing, and it should be
 	// impossible to reach by passing the wrong argument.
 	DeleteAll(ctx context.Context) error
+}
+
+// WirelessService reads and writes wireless identity: SSID, passphrase, hidden and
+// enabled state, per interface.
+//
+// Writes are refused when the calling session arrives over WiFi, because applying
+// one would sever that session with no address to reconnect at. See
+// VISION.md's Wireless Writes section.
+type WirelessService interface {
+	// Radios returns every radio with its interfaces.
+	Radios(ctx context.Context) ([]types.WirelessRadio, error)
+
+	// Interfaces returns every wireless interface, flattened across radios.
+	Interfaces(ctx context.Context) ([]types.WirelessInterface, error)
+
+	// Get returns the interface named name, or ErrNotFound listing the valid names.
+	Get(ctx context.Context, name string) (*types.WirelessInterface, error)
+
+	// Radio returns the radio named device, or ErrNotFound listing the valid names.
+	Radio(ctx context.Context, device string) (*types.WirelessRadio, error)
+
+	// SetSSID writes one interface's SSID. A convenience wrapper over SetInterface.
+	SetSSID(ctx context.Context, name, ssid string) error
+
+	// SetInterface writes a partial update to one interface: SSID, passphrase,
+	// encryption, hidden or enabled. Unset fields are left alone.
+	SetInterface(ctx context.Context, name string, changes types.InterfaceChanges) error
+
+	// SetRadio writes a partial update to one radio's tuning: channel, bandwidth,
+	// hardware mode or transmit power. Every interface on the radio inherits it.
+	SetRadio(ctx context.Context, device string, changes types.RadioChanges) error
+
+	// SessionInterface reports the firmware's name for the link this session
+	// arrives over: "cable", "2.4G", "5G", or "" when off-LAN.
+	SessionInterface(ctx context.Context) (string, error)
 }
 
 // ClientService reads stations known to the router. Read-only.
@@ -1169,11 +1217,26 @@ Dated for future readers wondering why.
 | 2026-07-28 | The firmware's login lockout gets its own sentinel | `-32003` with `data.wait` locks the account for ~10 minutes after roughly a dozen failures, and refuses a correct password while locked. Reporting it as a generic auth failure sends the operator to check a password when the fix is to wait. Learned by tripping it. |
 | 2026-07-28 | `ipmath` is public, not `src/internal/` | The utilities are main packages outside `src/`, so Go's internal rule made it unimportable by the very consumers that need it. The compiler disproved the original rationale. |
 | 2026-07-28 | DNS names come from the host file, not from reservations | Verified on hardware: a static bind's name is a label, and `nslookup` against the router does not resolve it. `dns.get_host` / `dns.set_host` write the `hosts(5)` file that dnsmasq answers from, confirmed for both a bare name and an arbitrary FQDN. This invalidated the project's central premise, so it is recorded rather than quietly fixed. |
+| 2026-07-29 | The channel list is treated as firmware policy, not hardware capability | `wifi.get_config` offers nine 5GHz channels on the captured SFT1200; `iw phy` on the same device reports twenty-five, the extra sixteen being every DFS channel, and the driver advertises radar detect widths. `dfs_support: false` is therefore a policy statement, not a hardware fact. gogl still validates against the API's list -- that is what the write will accept -- but the refusal says "the firmware does not offer" rather than "not available", and a test pins that wording. Blaming the hardware sends someone looking for a hardware answer to a firmware question. |
+| 2026-07-29 | `htmodes` is modelled from a capture, and the mock fixture is a verbatim copy | The vendored description calls it an array of bandwidth strings; the device sends an object keyed by hardware mode with a bool `auto` entry. Typing it from the description made every `wifi.get_config` read fail. `hwmodes` and `encryptions` were wrong too. The wireless fixture is now the captured payload with the keys replaced, and a test asserts it decodes through the library's own types -- the check whose absence let fixture and type agree with each other while both disagreed with hardware. |
+| 2026-07-29 | Narrower channel widths are inferred as settable | The firmware reports only the maximum width per hardware mode. gogl offers `auto` plus every width up to that maximum, which is an inference: hence an unsupported width is refused by naming the options rather than by asserting a fact about the radio. |
+| 2026-07-29 | Radio tuning is in scope after all | Excluded as "tuning rather than provisioning", which was wrong for a travel router: the channel a site's existing WiFi occupies is exactly what you need to move off. It carries the same guard as identity, because retuning drops the radio's clients just as thoroughly. |
+| 2026-07-29 | Partial updates send only the named fields | **Verified on hardware 2026-07-29:** writing only `ssid` left the passphrase and encryption intact on both radios. `wifi.set_config` leaves absent fields alone. Sending unchanged values back would work but makes every write a chance to clobber a concurrent admin-panel edit. |
+| 2026-07-29 | Wireless flags take an explicit value, e.g. `--set-hidden=false` | A partial update must distinguish "set false" from "unmentioned", and `flag.Bool` leaves both at false. `optionalBool`/`optionalInt`/`optionalString` carry the set-ness. `IsBoolFlag` returns false deliberately, so a bare `--set-enabled` is an error rather than a silent true -- which is how such a flag ends up disabling something. Channel 0 means auto, so a zero sentinel was unavailable too. |
+| 2026-07-29 | Writes are validated against the radio's advertised capabilities | Each radio reports its own channels, bandwidths, hardware modes and encryptions. Checking against them turns `Invalid params` into "channel 6 is not available on 5G (have: 36, 40, ...)". The lists differ per radio and per regulatory domain, so hardcoding them would be wrong somewhere. |
+| 2026-07-29 | Interface and radio changes go out as two calls | The firmware scopes the first by `iface_name` and the second by `device`. Two calls match that, and make a partial failure name which half applied. |
+| 2026-07-29 | Wireless identity is writable, guarded rather than forbidden | It was out of scope because writing wireless over a wireless session locks you out. That reason survives as a guard: `gogl` finds its own address in `client.get_list` and refuses unless the firmware reports it on `cable`. Reproducing a network means reproducing what devices associate to, not only what addresses they get. |
+| 2026-07-29 | The session guard refuses any WiFi path, not just the radio being changed | Changing the 2.4G SSID from a 5G association is provably safe, so the strict rule refuses some valid writes. It is still the right default: the cost of the strict rule is plugging in a cable, and the cost of a subtle rule that is wrong once is a walk to the hardware. `--yes` waives the prompt and deliberately does not waive this. |
+| 2026-07-29 | An undeterminable session path is a refusal, not a warning | If gogl cannot tell how it reaches the router, it cannot tell whether the write is recoverable. Proceeding on an unanswerable question is exactly the bet whose downside is unrecoverable. |
+| 2026-07-29 | SSID writes live in `goglnet`, not a fourth utility | The three-tool mirror of `gofi` is worth more than a tidier separation, and an SSID is network configuration. A `goglwifi` would break the mirror for one flag. |
+| 2026-07-29 | Passphrases are masked in output but readable over the API | The firmware returns them cleartext on port 80; reading them needs LAN access plus the admin password, the same bar as the admin panel, so it is accepted rather than worked around. Masking keeps a key out of scrollback and pasted bug reports, which is a different problem from access control. |
 | 2026-07-29 | The marker line carries the domain as bare words, not `(domain: x)` | `dns.set_host` rejects `(`, `)` and `=` anywhere in the file with `-32602`, naming nothing. The parenthesized form made every host-file write fail on hardware while all 404 tests passed, because the mock accepted what its author sent. The mock now enforces the firmware's rule, and `types.ValidateContent` catches a violation before the RPC. |
 | 2026-07-29 | An empty managed block is not written | `Render` omitted nothing, so clearing an already-empty router still pushed a file. Combined with the marker bug that turned a no-op into a hard failure. A block with no domain and no entries says nothing worth persisting. |
 | 2026-07-28 | The DNS domain lives in gogl's host-file marker line | No endpoint sets dnsmasq's `domain`, and `/ubus` is unavailable, so there is no way to make the router append a suffix. gogl writes fully-qualified names instead, which works for any suffix, and needs somewhere to keep the suffix. The marker line puts it on the device, so it travels with the router rather than living beside whichever machine ran the tool. |
 | 2026-07-28 | A reservation write requires a configured domain | A bind with no name is an address nothing can find, and nothing in the router's UI flags it as incomplete. Gating the write turns a silent omission into an error where the mistake is. Reads and deletes stay ungated: only writes that create addressing are. |
-| 2026-07-28 | A network write requires zero reservations | Renumbering the LAN under live reservations strands every one of them outside the new subnet: present in the table, silently inert. Refusing with a count is more useful than a warning nobody reads. |
+| 2026-07-29 | The guard applies to subnet moves only, and `WriteForced` waives it | A pool-only change leaves the address alone, so the session survives and no reservation can be renumbered by it; guarding it protected against nothing while forcing the operator to restate an address that was not moving. `--force` exists because the firmware's rewrite is usually the desired outcome, and the guard's original premise was wrong. Forcing waives the guard, never the validation. |
+| 2026-07-29 | Reservations inside the DHCP pool are reported, not warned about once | It arises silently -- a renumber moved 20 of 27 into the pool, because the firmware rewrites host parts without considering the pool -- and it is the explanation for an `AVAILABLE` count that looks wrong. So it belongs in the read-only report, not only in the write path. |
+| 2026-07-28 | A network write requires zero reservations | ~~Renumbering strands every reservation outside the new subnet.~~ **Premise disproved 2026-07-29:** the firmware silently renumbers them, preserving host parts. Guard retained on narrower grounds -- an unannounced rewrite of every reservation is a large side effect of an address flag, and the behavior is untested for a netmask change or a move that lands addresses inside the new pool. The rule itself was a user requirement, so it stands until they say otherwise. |
 | 2026-07-28 | `--clear` removes DNS names as well as reservations | They are one intent stored in two tables. Clearing only the binds would leave names resolving to unreserved addresses -- and since clearing is what unblocks a renumber, those names would then answer for a subnet that no longer exists. The domain survives, being configuration rather than content. |
 | 2026-07-28 | Pool validation lives on `types.Network`, not in the service | `goglnet --dry-run` runs the same check. A preview that approves what the write would reject is worse than no preview, so the two paths run identical code rather than similar code. |
 | 2026-07-28 | Per-entry reservation writes, not a whole-table replace | `lan.add_static_bind` / `set_static_bind` / `remove_static_bind` are what the device exposes; there is no replace. Per-entry also means a failure is per-entry and reportable, rather than an all-or-nothing table write. |

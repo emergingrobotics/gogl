@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -241,4 +242,24 @@ func IsTerminal(f *os.File) bool {
 		return false
 	}
 	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// Confirm asks for a yes before a destructive operation, reading from in and
+// prompting on out.
+//
+// Shared rather than duplicated per utility: both goglps and goglnet gate writes
+// this way, and two copies of a yes/no parser is two chances to disagree about what
+// counts as consent. Anything but "y" is a refusal, including EOF -- a closed stdin
+// is not agreement.
+func Confirm(in io.Reader, out io.Writer, prompt string) error {
+	fmt.Fprint(out, prompt)
+
+	var answer string
+	if _, err := fmt.Fscanln(in, &answer); err != nil {
+		return errors.New("aborted")
+	}
+	if !strings.EqualFold(strings.TrimSpace(answer), "y") {
+		return errors.New("aborted")
+	}
+	return nil
 }

@@ -120,6 +120,14 @@ func (c *Client) Hosts() services.HostsService {
 	return services.NewHostsService(c.transport)
 }
 
+// Wireless reads and writes wireless identity.
+//
+// SetSSID is refused when this session arrives over WiFi: applying it would drop
+// the session with no address to reconnect at.
+func (c *Client) Wireless() services.WirelessService {
+	return services.NewWirelessService(c.transport, c.cfg.Host)
+}
+
 // Clients reads stations known to the router. Read-only.
 func (c *Client) Clients() services.ClientService {
 	return services.NewClientService(c.transport)

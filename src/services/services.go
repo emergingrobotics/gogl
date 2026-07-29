@@ -31,14 +31,18 @@ type NetworkService interface {
 
 	// Set writes an interface's address and DHCP pool.
 	//
-	// Refused with ErrReservationsExist while any reservation is present:
-	// renumbering the LAN underneath live reservations would leave every one of
-	// them pointing outside the new subnet, inert and easy to miss. Clear them
-	// first.
+	// A change that moves the subnet is refused with ErrReservationsExist while any
+	// reservation is present, unless mode is WriteForced. The firmware silently
+	// renumbers every bind into the new subnet rather than stranding them, which is
+	// not what that guard was designed against; see the correction on
+	// networkService.Set.
 	//
-	// This changes the address the router is being managed at, so the calling
-	// session will not survive it.
-	Set(ctx context.Context, n *types.Network) error
+	// A pool-only change is never guarded and never drops the session: the router
+	// keeps its address, so no reservation moves.
+	//
+	// Moving the subnet changes the address the router is managed at, so the calling
+	// session will not survive that case.
+	Set(ctx context.Context, n *types.Network, mode WriteMode) error
 }
 
 // HostsService manages DNS names through the router's hosts file.
@@ -107,6 +111,41 @@ type ReservationService interface {
 	// operation that can discard a whole network's addressing, and it should be
 	// impossible to reach by passing the wrong argument.
 	DeleteAll(ctx context.Context) error
+}
+
+// WirelessService reads and writes wireless identity: SSID, passphrase, hidden and
+// enabled state, per interface.
+//
+// Writes are refused when the calling session arrives over WiFi, because applying
+// one would sever that session with no address to reconnect at. See
+// VISION.md's Wireless Writes section.
+type WirelessService interface {
+	// Radios returns every radio with its interfaces.
+	Radios(ctx context.Context) ([]types.WirelessRadio, error)
+
+	// Interfaces returns every wireless interface, flattened across radios.
+	Interfaces(ctx context.Context) ([]types.WirelessInterface, error)
+
+	// Get returns the interface named name, or ErrNotFound listing the valid names.
+	Get(ctx context.Context, name string) (*types.WirelessInterface, error)
+
+	// Radio returns the radio named device, or ErrNotFound listing the valid names.
+	Radio(ctx context.Context, device string) (*types.WirelessRadio, error)
+
+	// SetSSID writes one interface's SSID. A convenience wrapper over SetInterface.
+	SetSSID(ctx context.Context, name, ssid string) error
+
+	// SetInterface writes a partial update to one interface: SSID, passphrase,
+	// encryption, hidden or enabled. Unset fields are left alone.
+	SetInterface(ctx context.Context, name string, changes types.InterfaceChanges) error
+
+	// SetRadio writes a partial update to one radio's tuning: channel, bandwidth,
+	// hardware mode or transmit power. Every interface on the radio inherits it.
+	SetRadio(ctx context.Context, device string, changes types.RadioChanges) error
+
+	// SessionInterface reports the firmware's name for the link this session
+	// arrives over: "cable", "2.4G", "5G", or "" when off-LAN.
+	SessionInterface(ctx context.Context) (string, error)
 }
 
 // ClientService reads stations known to the router. Read-only.

@@ -269,16 +269,11 @@ func runDel(ctx context.Context, client *gogl.Client, modes modeFlags) error {
 }
 
 // confirm asks for a yes before a destructive operation.
+//
+// Delegates to conn so goglps and goglnet cannot disagree about what counts as
+// consent.
 func confirm(in io.Reader, out io.Writer) error {
-	fmt.Fprint(out, "Proceed? [y/N] ")
-	var answer string
-	if _, err := fmt.Fscanln(in, &answer); err != nil {
-		return errors.New("aborted")
-	}
-	if !strings.EqualFold(strings.TrimSpace(answer), "y") {
-		return errors.New("aborted")
-	}
-	return nil
+	return conn.Confirm(in, out, "Proceed? [y/N] ")
 }
 
 // runSetDomain configures the DNS domain, which every reservation write requires.

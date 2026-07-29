@@ -12,7 +12,7 @@ WiFi related operations
 |---|---|---|
 | [`get_config`](#get_config) | verified | Get all WiFi configuration information of the system |
 | [`get_status`](#get_status) | verified | Get WiFi device status |
-| [`set_config`](#set_config) | - | Set WiFi parameters |
+| [`set_config`](#set_config) | verified | Set WiFi parameters |
 | [`set_txpower`](#set_txpower) | - | Set RF transmit power |
 
 ---
@@ -269,7 +269,7 @@ _No params._
 
 Set WiFi parameters
 
-Not exercised against hardware here.
+**Verified** on a GL-SFT1200 running 4.3.28.
 
 | Params | Type | Required | Description |
 |---|---|---|---|

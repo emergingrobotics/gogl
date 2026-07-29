@@ -48,6 +48,13 @@ var (
 	// firmware refuses.
 	ErrUnwritableContent = types.ErrUnwritableContent
 
+	// ErrInvalidInput means a caller-supplied value is unfit to write.
+	ErrInvalidInput = types.ErrInvalidInput
+
+	// ErrWirelessSession means a wireless write was refused because the session
+	// issuing it arrives over WiFi.
+	ErrWirelessSession = types.ErrWirelessSession
+
 	// ErrInvalidName means a reservation name failed validation. Returned rather
 	// than escaped, because a bad name can corrupt dnsmasq's config.
 	ErrInvalidName = types.ErrInvalidName

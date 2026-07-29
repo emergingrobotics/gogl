@@ -114,7 +114,7 @@ func TestNetworkSetRefusedWhileReservationsExist(t *testing.T) {
 	})
 	svc := services.NewNetworkService(newTransport(t, s))
 
-	err := svc.Set(context.Background(), newNetwork())
+	err := svc.Set(context.Background(), newNetwork(), services.WriteGuarded)
 	if !errors.Is(err, types.ErrReservationsExist) {
 		t.Fatalf("error = %v, want ErrReservationsExist", err)
 	}
@@ -140,7 +140,7 @@ func TestNetworkSetAllowedOnceCleared(t *testing.T) {
 	if err := reservations.DeleteAll(ctx); err != nil {
 		t.Fatalf("DeleteAll: %v", err)
 	}
-	if err := network.Set(ctx, newNetwork()); err != nil {
+	if err := network.Set(ctx, newNetwork(), services.WriteGuarded); err != nil {
 		t.Fatalf("Set after clearing: %v", err)
 	}
 
@@ -162,7 +162,7 @@ func TestNetworkSetRejectsPoolOutsideSubnet(t *testing.T) {
 	n := newNetwork()
 	n.DHCPStart, n.DHCPStop = "10.0.0.100", "10.0.0.149"
 
-	err := svc.Set(context.Background(), n)
+	err := svc.Set(context.Background(), n, services.WriteGuarded)
 	if err == nil {
 		t.Fatal("Set accepted a pool outside the subnet")
 	}
@@ -178,7 +178,7 @@ func TestNetworkSetRejectsInvertedPool(t *testing.T) {
 	n := newNetwork()
 	n.DHCPStart, n.DHCPStop = n.DHCPStop, n.DHCPStart
 
-	if err := svc.Set(context.Background(), n); err == nil {
+	if err := svc.Set(context.Background(), n, services.WriteGuarded); err == nil {
 		t.Error("Set accepted a pool running backwards")
 	}
 }
@@ -190,13 +190,13 @@ func TestNetworkSetRejectsUnusableSubnetAndMissingInterface(t *testing.T) {
 
 	bad := newNetwork()
 	bad.LANIP = "nonsense"
-	if err := svc.Set(ctx, bad); err == nil {
+	if err := svc.Set(ctx, bad, services.WriteGuarded); err == nil {
 		t.Error("Set accepted an unusable address")
 	}
 
 	noIface := newNetwork()
 	noIface.Interface = ""
-	if err := svc.Set(ctx, noIface); err == nil {
+	if err := svc.Set(ctx, noIface, services.WriteGuarded); err == nil {
 		t.Error("Set accepted an empty interface name")
 	}
 }
@@ -229,5 +229,92 @@ func TestReservationDeleteAllOnEmptyDevice(t *testing.T) {
 
 	if err := svc.DeleteAll(context.Background()); err != nil {
 		t.Errorf("DeleteAll on an empty device: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The guard applies to subnet moves, not to pool changes
+// ---------------------------------------------------------------------------
+
+// A pool-only change moves nothing. The router keeps its address, the session
+// survives, and the firmware has no reason to touch a reservation -- so refusing it
+// would be guarding against something that cannot happen.
+func TestPoolOnlyChangeIsNotGuarded(t *testing.T) {
+	s := guardServer(t, "lab.example", []types.Reservation{
+		{Name: "nas", MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.8.13"},
+	})
+	svc := services.NewNetworkService(newTransport(t, s))
+
+	// Same address and mask as the fixture; only the pool moves.
+	n := &types.Network{
+		Interface: types.InterfaceLAN,
+		LANIP:     "192.168.8.1",
+		Netmask:   "255.255.255.0",
+		DHCPStart: "192.168.8.200",
+		DHCPStop:  "192.168.8.240",
+	}
+
+	if err := svc.Set(context.Background(), n, services.WriteGuarded); err != nil {
+		t.Fatalf("a pool-only change was refused: %v", err)
+	}
+
+	got := s.Network()
+	if got[0].DHCPStart != "192.168.8.200" || got[0].DHCPStop != "192.168.8.240" {
+		t.Errorf("pool not written: %+v", got[0])
+	}
+	if got[0].LANIP != "192.168.8.1" {
+		t.Errorf("a pool-only change moved the router to %s", got[0].LANIP)
+	}
+}
+
+// WriteForced exists because the guard's original premise was wrong: the firmware
+// renumbers reservations rather than stranding them, so clearing them first is not
+// actually required.
+func TestNetworkSetForcedProceedsWithReservations(t *testing.T) {
+	s := guardServer(t, "lab.example", []types.Reservation{
+		{Name: "nas", MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.8.13"},
+	})
+	svc := services.NewNetworkService(newTransport(t, s))
+
+	if err := svc.Set(context.Background(), newNetwork(), services.WriteForced); err != nil {
+		t.Fatalf("WriteForced was refused: %v", err)
+	}
+	if got := s.Network(); got[0].LANIP != "192.168.2.1" {
+		t.Errorf("network = %s, want the new address", got[0].LANIP)
+	}
+}
+
+// Forcing waives the guard, not the validation. A pool outside the subnet still yields
+// a DHCP server that serves nothing.
+func TestNetworkSetForcedStillValidates(t *testing.T) {
+	s := guardServer(t, "lab.example", nil)
+	svc := services.NewNetworkService(newTransport(t, s))
+
+	n := newNetwork()
+	n.DHCPStart, n.DHCPStop = "10.0.0.100", "10.0.0.149"
+
+	if err := svc.Set(context.Background(), n, services.WriteForced); err == nil {
+		t.Error("WriteForced accepted a pool outside the subnet")
+	}
+}
+
+// A netmask change with the same address still moves the subnet, so it is still
+// guarded. This is the case the firmware's renumbering is least likely to handle.
+func TestNetmaskChangeIsGuarded(t *testing.T) {
+	s := guardServer(t, "lab.example", []types.Reservation{
+		{Name: "nas", MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.8.13"},
+	})
+	svc := services.NewNetworkService(newTransport(t, s))
+
+	n := &types.Network{
+		Interface: types.InterfaceLAN,
+		LANIP:     "192.168.8.1",
+		Netmask:   "255.255.255.128",
+		DHCPStart: "192.168.8.100",
+		DHCPStop:  "192.168.8.120",
+	}
+
+	if err := svc.Set(context.Background(), n, services.WriteGuarded); !errors.Is(err, types.ErrReservationsExist) {
+		t.Errorf("error = %v, want ErrReservationsExist", err)
 	}
 }

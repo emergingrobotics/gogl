@@ -288,6 +288,146 @@ Each static-bind write appears to reload the router's DHCP/DNS services. Observe
 
 Batch your writes, expect a short interruption, and do not assume the session survives one.
 
+### Wireless writes
+
+`wifi.get_config` is verified: it returns one entry per radio under `res`, each carrying
+`band`, `device`, `channel`, `htmode`, `hwmode`, `txpower` and an `ifaces` array. Each interface
+has `name` (the `iface_name` a write requires), `ssid`, `key`, `encryption`, `enabled`, `hidden`
+and `guest`.
+
+**Passphrases come back in cleartext**, here and in `system.get_status`, over plain HTTP on port
+80. Reading them requires LAN access and the admin password, which is the same bar as opening
+the admin panel, so this is recorded rather than treated as a defect. `gogl` masks keys in
+`goglnet` output unless `--show-key` is given, which keeps them out of terminal scrollback and
+pasted bug reports; it is not an access control.
+
+Each radio also advertises what it supports. **Three of these fields disagree with GL.iNet's own
+description, captured 2026-07-29:**
+
+| Field | Description says | Device sends |
+|---|---|---|
+| `htmodes` | array of bandwidth strings | **object** keyed by hardware mode, values are the max channel width in MHz, plus an `auto` key holding a **bool** |
+| `hwmodes` | array, implying `11b`/`11g`/`11n` | array of slash-joined combinations: `["11n","11g/n","11b/g/n"]`, `["11ac","11n/ac","11a/n/ac"]` |
+| `encryptions` | unspecified | `["none","psk2","psk-mixed","sae","sae-mixed"]` -- includes WPA3, and no bare `psk` |
+
+Verbatim, from the 2.4GHz radio:
+
+```json
+"htmode": "auto",
+"htmodes": {"11b/g/n": 40, "11g/n": 40, "11n": 40, "auto": true},
+"hwmode": "11g/n",
+"hwmodes": ["11n", "11g/n", "11b/g/n"]
+```
+
+and the 5GHz radio:
+
+```json
+"htmode": "20",
+"htmodes": {"11a/n/ac": 80, "11ac": 80, "11n/ac": 80, "auto": false},
+"hwmode": "11a/n/ac",
+"hwmodes": ["11ac", "11n/ac", "11a/n/ac"]
+```
+
+Note the current `htmode` is a **width string** -- `auto` or `20` were observed -- not the
+`HT20`/`VHT80` form the description implies. Since the firmware reports only the maximum width
+per hardware mode, `gogl` infers that narrower widths are also settable, and lists `auto`, `20`,
+`40`, `80` accordingly. That inference is unconfirmed by a successful write.
+
+#### `channels` reports firmware policy, not hardware capability
+
+`channels` is an array of objects carrying `channel` and a `dfs` flag, with a top-level
+`dfs_support`. **Both describe what the firmware will do, not what the radio can do**, and the
+difference is large.
+
+The captured unit reports `dfs_support: false` and lists nine 5GHz channels:
+
+```
+36, 40, 44, 48, 149, 153, 157, 161, 165
+```
+
+The same device's driver, asked directly over SSH with `iw phy`, reports **twenty-five**, and the
+missing sixteen are precisely the DFS ones:
+
+```
+5180 [36]  5200 [40]  5220 [44]  5240 [48]              <- offered by the API
+5260 [52] (radar detection)   5280 [56] (radar detection)
+5300 [60] (radar detection)   5320 [64] (radar detection)
+5500 [100] ... 5720 [144]     (all radar detection)     <- absent from the API
+5745 [149] 5765 [153] 5785 [157] 5805 [161] 5825 [165]  <- offered by the API
+```
+
+`iw phy` also lists radar detect widths in its interface combinations, so the hardware and the
+`mac80211` driver both support DFS. GL.iNet's API simply does not offer those channels.
+
+Consequences for a client:
+
+- `wifi.set_config` presumably will not accept a DFS channel either, so validating against the
+  API's list is the right behavior. But the refusal means "this firmware will not", not "this
+  radio cannot", and an error message that says the latter is wrong.
+- `dfs_support` cannot be used to decide whether DFS handling matters on a given model. A `false`
+  here is a policy statement.
+- gogl's DFS warning path is therefore unreachable against this firmware and is exercised only
+  against a synthetic fixture (`mock.DFSWireless`). It is kept because other models and other
+  regulatory domains do expose DFS channels, and vacating one takes every client with it.
+
+An earlier version of this document said the unit "lists no DFS channel", which was true of the
+API and false of the device. The lesson is the same one `htmodes` taught: what the API says about
+the hardware is a claim by the API.
+
+`gogl` validates writes against these lists rather than hardcoding values, since they differ per
+radio and per regulatory domain. Typing `htmodes` from the description instead of a capture made
+every read of `wifi.get_config` fail with a decode error -- the second time in this project that
+trusting the vendored description cost more than capturing would have.
+
+`wifi.set_config` is **VERIFIED**, 2026-07-29: `{"iface_name": "default_radio0", "ssid": "..."}`
+and the same for `default_radio1` both applied, on a session arriving over ethernet. The write
+takes effect immediately -- **no apply or commit step** -- matching static binds and host-file
+writes. It is scoped two ways:
+
+| Scope | Key | Fields |
+|---|---|---|
+| Interface | `iface_name` | `ssid`, `key`, `encryption`, `enabled`, `hidden` |
+| Radio | `device` | `channel`, `htmode`, `hwmode`, `txpower` |
+
+`gogl` sends the two scopes as two calls, and sends only the fields the caller named.
+
+**Partial updates leave unmentioned fields alone. VERIFIED** the same day: after writing only
+`ssid` to both main interfaces, `wifi.get_config` still reported the original 8-character
+passphrase and `psk2` encryption on each, with the guest interfaces untouched. This is the
+assumption the whole partial-update design rests on, and it holds.
+
+Still unverified:
+
+1. **The radio-scoped fields.** `channel`, `htmode`, `hwmode` and `txpower` have not been written.
+   The inference that narrower channel widths are settable when only the maximum is reported is
+   also untested.
+3. **Whether both scopes travel in one call.** `gogl` sends two calls and does not rely on it.
+
+### The hardware exceeds what the API exposes
+
+Confirmed by SSH to the same unit, which runs **OpenWrt 18.06 / LEDE** with a real
+`mac80211`/`nl80211` stack -- `iw` works fully and reports complete HT/VHT capability tables.
+Two places where the API understates the device:
+
+- **DFS channels**, described above.
+- **Monitor mode, sort of.** Both radios list `monitor` in their supported interface modes.
+  Adding one fails with `-22 EINVAL` while the APs are up -- consistent with
+  `valid interface combinations` listing only `{managed, AP}` and no monitor. After `wifi down`
+  the interface *is* created and reports `type monitor`, and then **bringing it up wedged the
+  device**, requiring a power cycle. Tested once, 2026-07-29.
+
+  So the practical answer is that monitor mode is advertised, attachable, and not usable. The
+  driver declares `NL80211_IFTYPE_MONITOR` without a working implementation behind it. Packet
+  injection was never reached. Use a USB adapter with `ath9k_htc` or `mt7612u` instead.
+
+  None of this is reachable over the JSON-RPC API and all of it needs SSH, which `gogl` excludes
+  by rule -- which is the useful part of the finding: an operation that hangs the device is
+  exactly what belongs outside a tool meant for unattended bulk provisioning.
+
+The device is also capable of an upstream WiFi uplink: `iw dev` showed a `wlan-sta0` interface in
+`managed` mode associated to another SSID, alongside the AP on the same radio. `gogl` does not
+model repeater mode.
+
 ### The ubus / LuCI path, and why it is unavailable here
 
 OpenWrt exposes UCI over HTTP through `uhttpd` at `POST /ubus`, JSON-RPC 2.0, brokered by

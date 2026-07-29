@@ -47,9 +47,34 @@ func formatText(w io.Writer, r *Report) error {
 	row("GATEWAY", r.Gateway)
 	row("DNS", strings.Join(r.DNS, ","))
 	row("RESERVED", strconv.Itoa(r.ReservedCount))
+	if len(r.InPool) > 0 {
+		// Spelled out on the RESERVED line's heels, because it is the explanation for
+		// an AVAILABLE count that otherwise looks wrong: a reservation inside the pool
+		// is neither dynamically assignable nor counted as available.
+		row("  IN POOL", fmt.Sprintf("%d  (honored by dnsmasq, excluded from the pool)", len(r.InPool)))
+	}
 	row("AVAILABLE", strconv.Itoa(r.AvailableCount))
 
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+
+	if len(r.InPool) > 0 {
+		fmt.Fprintf(w, "\n%d reservation(s) fall inside the DHCP pool %s-%s:\n",
+			len(r.InPool), r.DHCPStart, r.DHCPStop)
+		for _, res := range r.InPool {
+			name := res.Name
+			if name == "" {
+				name = emptyMarker
+			}
+			fmt.Fprintf(w, "  %-15s %-17s %s\n", res.IP, res.MAC, name)
+		}
+		fmt.Fprintln(w, "These work: dnsmasq honors a static bind inside the dynamic range and")
+		fmt.Fprintln(w, "excludes that address from allocation. Move the pool with --set-start")
+		fmt.Fprintln(w, "and --set-end if you would rather keep the ranges separate.")
+	}
+
+	return nil
 }
 
 func formatJSON(w io.Writer, r *Report) error {

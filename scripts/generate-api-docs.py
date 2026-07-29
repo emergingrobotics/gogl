@@ -46,6 +46,7 @@ VERIFIED = {
     ("network", "get_dhcp_leases"),
     ("wifi", "get_config"),
     ("wifi", "get_status"),
+    ("wifi", "set_config"),
     ("dns", "get_config"),
     ("dns", "get_host"),
     ("dns", "set_host"),

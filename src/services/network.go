@@ -85,27 +85,64 @@ func (s *networkService) Leases(ctx context.Context) ([]types.DHCPLease, error) 
 	return list.Leases, nil
 }
 
+// WriteMode says whether a network write may proceed past the reservations guard.
+//
+// Named rather than a bare bool so the call site reads as its own documentation:
+// Set(ctx, n, WriteForced) says what it does, Set(ctx, n, true) does not.
+type WriteMode int
+
+const (
+	// WriteGuarded refuses a subnet change while reservations exist.
+	WriteGuarded WriteMode = iota
+
+	// WriteForced proceeds anyway, accepting that the firmware will rewrite every
+	// reservation into the new subnet without announcing it.
+	WriteForced
+)
+
 // Set writes an interface's address and DHCP pool via lan.set_config.
 //
-// Refused while any reservation exists. Renumbering the LAN underneath live
-// reservations leaves every one of them outside the new subnet -- present in the
-// table, silently inert, and easy to miss for a long time. Clear them first, apply
-// the new network, then import the addresses you want.
+// Refused while any reservation exists, with ErrReservationsExist.
+//
+// The original reason for that was wrong, and is recorded here because the correction
+// matters more than the rule. It was written expecting the firmware to leave static
+// binds alone, stranding all of them outside the new subnet. OBSERVED 2026-07-29 on a
+// GL-SFT1200 running 4.3.28: the firmware silently renumbers every bind into the new
+// subnet, preserving host parts. 192.168.2.10 became 192.168.8.10 across 27
+// reservations, with no prompt and no report.
+//
+// The guard is kept for two reasons that survive the correction. Rewriting every
+// reservation is a large change to happen as a side effect of an address flag, and
+// nothing in the API announces it. And the behavior is only known for a same-size
+// subnet: a narrower netmask, where a host part no longer fits, is untested, as is a
+// move that lands reservations inside the new DHCP pool -- which is what happened to
+// 20 of those 27.
 //
 // This changes the address the router is managed at, so the session making the call
 // will not survive it. That is inherent, not a defect: expect to reconnect.
-func (s *networkService) Set(ctx context.Context, n *types.Network) error {
+func (s *networkService) Set(ctx context.Context, n *types.Network, mode WriteMode) error {
 	if err := n.ValidateForWrite(); err != nil {
 		return fmt.Errorf("gogl: %w", err)
 	}
 
-	existing, err := s.reservations.List(ctx)
+	moving, err := s.movesSubnet(ctx, n)
 	if err != nil {
 		return err
 	}
-	if len(existing) > 0 {
-		return fmt.Errorf("%w: %d reservation(s) present; clear them before changing the network",
-			types.ErrReservationsExist, len(existing))
+
+	// The guard exists because the subnet moves. A pool-only change moves nothing:
+	// the router keeps its address, the session survives, and the firmware has no
+	// reason to touch a single reservation. Refusing it would be guarding against
+	// something that cannot happen.
+	if moving && mode == WriteGuarded {
+		existing, err := s.reservations.List(ctx)
+		if err != nil {
+			return err
+		}
+		if len(existing) > 0 {
+			return fmt.Errorf("%w: %d reservation(s) present; clear them, or force the write",
+				types.ErrReservationsExist, len(existing))
+		}
 	}
 
 	args := map[string]any{
@@ -119,4 +156,26 @@ func (s *networkService) Set(ctx context.Context, n *types.Network) error {
 		return fmt.Errorf("gogl: write network config: %w", err)
 	}
 	return nil
+}
+
+// movesSubnet reports whether n changes the interface's address or netmask.
+//
+// This is what decides whether the reservations guard applies. A pool-only change
+// leaves the subnet alone, so no reservation can be renumbered by it and the session
+// survives; guarding it would be guarding against something that cannot happen.
+//
+// An interface that is not in the current list is treated as a move: when the current
+// state cannot be established, the safe assumption is the one that keeps the guard.
+func (s *networkService) movesSubnet(ctx context.Context, n *types.Network) (bool, error) {
+	interfaces, err := s.List(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, current := range interfaces {
+		if current.Interface != n.Interface {
+			continue
+		}
+		return current.LANIP != n.LANIP || current.Netmask != n.Netmask, nil
+	}
+	return true, nil
 }

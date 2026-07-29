@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -81,7 +82,7 @@ func targetNetwork() *types.Network {
 func TestRunSetNetworkWrites(t *testing.T) {
 	s, c := mockClient(t, nil)
 
-	if err := runSetNetwork(context.Background(), c, targetNetwork(), false); err != nil {
+	if err := runSetNetwork(context.Background(), c, targetNetwork(), networkModes{}); err != nil {
 		t.Fatalf("runSetNetwork: %v", err)
 	}
 
@@ -102,7 +103,7 @@ func TestRunSetNetworkWrites(t *testing.T) {
 func TestRunSetNetworkDryRunDoesNotWrite(t *testing.T) {
 	s, c := mockClient(t, nil)
 
-	if err := runSetNetwork(context.Background(), c, targetNetwork(), true); err != nil {
+	if err := runSetNetwork(context.Background(), c, targetNetwork(), networkModes{dryRun: true}); err != nil {
 		t.Fatalf("dry run: %v", err)
 	}
 
@@ -121,7 +122,7 @@ func TestRunSetNetworkRefusedWithReservations(t *testing.T) {
 		{Name: "pi", MAC: "aa:bb:cc:dd:ee:02", IP: "192.168.8.14"},
 	})
 
-	err := runSetNetwork(context.Background(), c, targetNetwork(), false)
+	err := runSetNetwork(context.Background(), c, targetNetwork(), networkModes{})
 	if !errors.Is(err, types.ErrReservationsExist) {
 		t.Fatalf("error = %v, want ErrReservationsExist", err)
 	}
@@ -143,7 +144,7 @@ func TestRunSetNetworkDryRunReportsTheRefusal(t *testing.T) {
 		{Name: "nas", MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.8.13"},
 	})
 
-	if err := runSetNetwork(context.Background(), c, targetNetwork(), true); !errors.Is(err, types.ErrReservationsExist) {
+	if err := runSetNetwork(context.Background(), c, targetNetwork(), networkModes{dryRun: true}); !errors.Is(err, types.ErrReservationsExist) {
 		t.Errorf("dry run error = %v, want ErrReservationsExist", err)
 	}
 }
@@ -156,8 +157,211 @@ func TestRunSetNetworkDryRunRejectsBadPool(t *testing.T) {
 	n := targetNetwork()
 	n.DHCPStart, n.DHCPStop = "10.0.0.100", "10.0.0.149"
 
-	err := runSetNetwork(context.Background(), c, n, true)
+	err := runSetNetwork(context.Background(), c, n, networkModes{dryRun: true})
 	if !errors.Is(err, types.ErrOutsideSubnet) {
 		t.Errorf("error = %v, want ErrOutsideSubnet", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// --force, pool-only writes, and the in-pool warning
+// ---------------------------------------------------------------------------
+
+func TestRunSetNetworkForcedProceedsWithReservations(t *testing.T) {
+	s, c := mockClient(t, []types.Reservation{
+		{Name: "nas", MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.8.13"},
+	})
+
+	err := runSetNetwork(context.Background(), c, targetNetwork(), networkModes{force: true})
+	if err != nil {
+		t.Fatalf("--force was refused: %v", err)
+	}
+	if got := s.Network(); got[0].LANIP != "192.168.2.1" {
+		t.Errorf("network = %s, want the new address", got[0].LANIP)
+	}
+}
+
+// The refusal must name the escape hatch, or the operator's only visible option is the
+// clear-and-reimport that is no longer necessary.
+func TestRunSetNetworkRefusalMentionsForce(t *testing.T) {
+	_, c := mockClient(t, []types.Reservation{
+		{Name: "nas", MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.8.13"},
+	})
+
+	err := runSetNetwork(context.Background(), c, targetNetwork(), networkModes{})
+	if !errors.Is(err, types.ErrReservationsExist) {
+		t.Fatalf("error = %v, want ErrReservationsExist", err)
+	}
+	for _, want := range []string{"--force", "goglps --clear", "rewrite"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// A pool-only change needs neither --set-ip nor --set-mask: the address is not moving,
+// so it is read from the device. Requiring them was pure friction.
+func TestRunSetNetworkPoolOnlyFillsAddressFromDevice(t *testing.T) {
+	s, c := mockClient(t, []types.Reservation{
+		{Name: "nas", MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.8.13"},
+	})
+
+	// Only the pool bounds, exactly as the CLI passes them.
+	n := &types.Network{
+		Interface: types.InterfaceLAN,
+		DHCPStart: "192.168.8.200",
+		DHCPStop:  "192.168.8.240",
+	}
+
+	if err := runSetNetwork(context.Background(), c, n, networkModes{}); err != nil {
+		t.Fatalf("pool-only change: %v", err)
+	}
+
+	got := s.Network()
+	if got[0].LANIP != "192.168.8.1" || got[0].Netmask != "255.255.255.0" {
+		t.Errorf("the address moved: %s/%s", got[0].LANIP, got[0].Netmask)
+	}
+	if got[0].DHCPStart != "192.168.8.200" || got[0].DHCPStop != "192.168.8.240" {
+		t.Errorf("pool not written: %+v", got[0])
+	}
+}
+
+// A pool-only change with reservations present must not be refused, since nothing
+// moves.
+func TestRunSetNetworkPoolOnlyIsNotGuarded(t *testing.T) {
+	_, c := mockClient(t, []types.Reservation{
+		{Name: "a", MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.8.13"},
+		{Name: "b", MAC: "aa:bb:cc:dd:ee:02", IP: "192.168.8.14"},
+	})
+
+	n := &types.Network{
+		Interface: types.InterfaceLAN,
+		DHCPStart: "192.168.8.200",
+		DHCPStop:  "192.168.8.240",
+	}
+	if err := runSetNetwork(context.Background(), c, n, networkModes{}); err != nil {
+		t.Errorf("a pool-only change was refused with reservations present: %v", err)
+	}
+}
+
+func TestReservationsInPool(t *testing.T) {
+	n := &types.Network{
+		Interface: types.InterfaceLAN,
+		LANIP:     "192.168.8.1",
+		Netmask:   "255.255.255.0",
+		// DHCPEnabled matters: a disabled server has no pool, so InDHCPPool reports
+		// false for every address and nothing is ever "in the pool".
+		DHCPEnabled: true,
+		DHCPStart:   "192.168.8.100",
+		DHCPStop:    "192.168.8.249",
+	}
+	reservations := []types.Reservation{
+		{Name: "below", MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.8.10"},
+		{Name: "inside", MAC: "aa:bb:cc:dd:ee:02", IP: "192.168.8.208"},
+		{Name: "also-inside", MAC: "aa:bb:cc:dd:ee:03", IP: "192.168.8.228"},
+		{Name: "elsewhere", MAC: "aa:bb:cc:dd:ee:04", IP: "10.0.0.5"},
+		{Name: "unparseable", MAC: "aa:bb:cc:dd:ee:05", IP: "nonsense"},
+	}
+
+	got := reservationsInPool(n, reservations)
+	if len(got) != 2 {
+		t.Fatalf("got %d in-pool reservations, want 2: %+v", len(got), got)
+	}
+	for _, r := range got {
+		if r.Name != "inside" && r.Name != "also-inside" {
+			t.Errorf("%q is not inside the pool", r.Name)
+		}
+	}
+}
+
+// This is the condition that arose silently on real hardware: a renumber moved 20 of
+// 27 reservations into the pool, and nothing said so.
+func TestBuildReportFlagsInPoolReservations(t *testing.T) {
+	network := testLAN()
+	reservations := []types.Reservation{
+		{Name: "below", MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.8.10"},
+		{Name: "inside", MAC: "aa:bb:cc:dd:ee:02", IP: "192.168.8.208"},
+	}
+
+	report, err := buildReport(context.Background(),
+		stubNetwork{n: network},
+		stubSystem{i: &types.SystemInfo{Model: "sft1200", Firmware: "4.3.28"}},
+		stubReservations{r: reservations})
+	if err != nil {
+		t.Fatalf("buildReport: %v", err)
+	}
+
+	if len(report.InPool) != 1 || report.InPool[0].Name != "inside" {
+		t.Errorf("InPool = %+v, want just the in-pool one", report.InPool)
+	}
+	// Both are still reserved; only one is inside the pool.
+	if report.ReservedCount != 2 {
+		t.Errorf("ReservedCount = %d, want 2", report.ReservedCount)
+	}
+}
+
+// The text report has to explain the in-pool case, because it is the reason an
+// AVAILABLE count looks wrong.
+func TestFormatTextExplainsInPoolReservations(t *testing.T) {
+	report, err := buildReport(context.Background(),
+		stubNetwork{n: testLAN()},
+		stubSystem{i: &types.SystemInfo{Model: "sft1200", Firmware: "4.3.28"}},
+		stubReservations{r: []types.Reservation{
+			{Name: "inside", MAC: "aa:bb:cc:dd:ee:02", IP: "192.168.8.208"},
+		}})
+	if err != nil {
+		t.Fatalf("buildReport: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := formatText(&buf, report); err != nil {
+		t.Fatalf("formatText: %v", err)
+	}
+	got := buf.String()
+
+	for _, want := range []string{"IN POOL", "192.168.8.208", "inside", "dnsmasq"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// And must say nothing when there is nothing to say.
+func TestFormatTextSilentWhenNoInPoolReservations(t *testing.T) {
+	report, err := buildReport(context.Background(),
+		stubNetwork{n: testLAN()},
+		stubSystem{i: &types.SystemInfo{Model: "sft1200", Firmware: "4.3.28"}},
+		stubReservations{r: []types.Reservation{
+			{Name: "below", MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.8.10"},
+		}})
+	if err != nil {
+		t.Fatalf("buildReport: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := formatText(&buf, report); err != nil {
+		t.Fatalf("formatText: %v", err)
+	}
+	if strings.Contains(buf.String(), "IN POOL") {
+		t.Errorf("output mentions the pool with nothing in it:\n%s", buf.String())
+	}
+}
+
+// A disabled DHCP server has no pool, so nothing can be inside it. Worth pinning: the
+// first version of TestReservationsInPool omitted DHCPEnabled and failed, which is the
+// code being right rather than the test.
+func TestReservationsInPoolWithDHCPDisabled(t *testing.T) {
+	n := &types.Network{
+		Interface: types.InterfaceLAN,
+		LANIP:     "192.168.8.1",
+		Netmask:   "255.255.255.0",
+		DHCPStart: "192.168.8.100",
+		DHCPStop:  "192.168.8.249",
+	}
+	got := reservationsInPool(n, []types.Reservation{
+		{Name: "inside", MAC: "aa:bb:cc:dd:ee:02", IP: "192.168.8.208"},
+	})
+	if len(got) != 0 {
+		t.Errorf("got %d in-pool reservations with DHCP disabled, want 0", len(got))
 	}
 }

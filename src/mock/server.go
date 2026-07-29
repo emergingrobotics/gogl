@@ -140,6 +140,7 @@ func NewServer(t *testing.T, opts Options) *Server {
 	// Every real router ships a host file, so the mock does too. It carries no gogl
 	// block, which is the factory state: no domain configured.
 	s.SetHostFile(FactoryHostFile)
+	s.SetWireless(FactoryWireless)
 	return s
 }
 
@@ -440,4 +441,262 @@ func HostFileWith(domain string, entries ...string) string {
 		f.Entries = append(f.Entries, types.HostEntry{IP: fields[0], Names: fields[1:]})
 	}
 	return f.Render()
+}
+
+// FactoryWireless is a verbatim capture of wifi.get_config from a GL-SFT1200 on
+// firmware 4.3.28, with the passphrases replaced.
+//
+// Verbatim, and not composed by hand, because the hand-composed version it replaces
+// encoded the vendored API description's claims rather than the device's behavior:
+// htmodes as an array of "HT20"/"VHT80" strings, hwmodes as bare "11b"/"11g"/"11n",
+// and an encryption list containing "psk". All three were wrong, and the mock
+// agreeing with the types meant the test suite could not tell.
+//
+// Only the keys are altered. Everything else, including the slash-joined hardware
+// modes, the object-shaped htmodes, and the absence of any DFS channel on this unit,
+// is what the device sent.
+const FactoryWireless = `{
+  "dfs_support": false,
+  "res": [
+    {
+      "band": "2G",
+      "channel": 6,
+      "channels": [
+        {"channel": 1, "dfs": false}, {"channel": 2, "dfs": false},
+        {"channel": 3, "dfs": false}, {"channel": 4, "dfs": false},
+        {"channel": 5, "dfs": false}, {"channel": 6, "dfs": false},
+        {"channel": 7, "dfs": false}, {"channel": 8, "dfs": false},
+        {"channel": 9, "dfs": false}, {"channel": 10, "dfs": false},
+        {"channel": 11, "dfs": false}
+      ],
+      "device": "radio0",
+      "encryptions": ["none", "psk2", "psk-mixed", "sae", "sae-mixed"],
+      "htmode": "auto",
+      "htmodes": {"11b/g/n": 40, "11g/n": 40, "11n": 40, "auto": true},
+      "hwmode": "11g/n",
+      "hwmodes": ["11n", "11g/n", "11b/g/n"],
+      "ifaces": [
+        {"enabled": true, "encryption": "psk2", "guest": false, "hidden": false,
+         "key": "mockpass", "name": "default_radio0", "ssid": "GL-SFT1200-c41"},
+        {"enabled": false, "encryption": "psk2", "guest": true, "hidden": false,
+         "key": "mockpass", "name": "guest2g", "ssid": "GL-SFT1200-c41-Guest"}
+      ],
+      "txpower": "Max"
+    },
+    {
+      "band": "5G",
+      "channel": 44,
+      "channels": [
+        {"channel": 36, "dfs": false}, {"channel": 40, "dfs": false},
+        {"channel": 44, "dfs": false}, {"channel": 48, "dfs": false},
+        {"channel": 149, "dfs": false}, {"channel": 153, "dfs": false},
+        {"channel": 157, "dfs": false}, {"channel": 161, "dfs": false},
+        {"channel": 165, "dfs": false}
+      ],
+      "device": "radio1",
+      "encryptions": ["none", "psk2", "psk-mixed", "sae", "sae-mixed"],
+      "htmode": "20",
+      "htmodes": {"11a/n/ac": 80, "11ac": 80, "11n/ac": 80, "auto": false},
+      "hwmode": "11a/n/ac",
+      "hwmodes": ["11ac", "11n/ac", "11a/n/ac"],
+      "ifaces": [
+        {"enabled": true, "encryption": "psk2", "guest": false, "hidden": false,
+         "key": "mockpass", "name": "default_radio1", "ssid": "GL-SFT1200-c41"},
+        {"enabled": false, "encryption": "psk2", "guest": true, "hidden": false,
+         "key": "mockpass", "name": "guest5g", "ssid": "GL-SFT1200-c41-5G-Guest"}
+      ],
+      "txpower": "Max"
+    }
+  ]
+}`
+
+// The values FactoryWireless seeds, named so tests assert against a constant rather
+// than a literal. The literals are how the last fixture change broke six tests at
+// once, each of which had its own copy of an invented SSID.
+const (
+	FactorySSID      = "GL-SFT1200-c41"
+	FactoryGuestSSID = "GL-SFT1200-c41-Guest"
+	FactoryKey       = "mockpass"
+
+	// Factory2GDevice and Factory5GDevice are the radio names, and the two
+	// FactoryIface* values the main interface on each.
+	Factory2GDevice = "radio0"
+	Factory5GDevice = "radio1"
+	Factory2GIface  = "default_radio0"
+	Factory5GIface  = "default_radio1"
+)
+
+// DFSWireless is FactoryWireless with DFS channels present.
+//
+// This unit reports dfs_support false and lists no DFS channel, so gogl's DFS warning
+// would otherwise be untested against any fixture. A router in another regulatory
+// domain does report them, which is exactly when the warning matters.
+const DFSWireless = `{
+  "dfs_support": true,
+  "res": [
+    {
+      "band": "5G",
+      "channel": 36,
+      "channels": [
+        {"channel": 36, "dfs": false}, {"channel": 40, "dfs": false},
+        {"channel": 52, "dfs": true}, {"channel": 56, "dfs": true},
+        {"channel": 149, "dfs": false}
+      ],
+      "device": "radio1",
+      "encryptions": ["none", "psk2", "psk-mixed", "sae", "sae-mixed"],
+      "htmode": "80",
+      "htmodes": {"11a/n/ac": 80, "11ac": 80, "11n/ac": 80, "auto": false},
+      "hwmode": "11a/n/ac",
+      "hwmodes": ["11ac", "11n/ac", "11a/n/ac"],
+      "ifaces": [
+        {"enabled": true, "encryption": "psk2", "guest": false, "hidden": false,
+         "key": "mockpass", "name": "default_radio1", "ssid": "dfs-test"}
+      ],
+      "txpower": "Max"
+    }
+  ]
+}`
+
+// Wireless returns the stored wireless configuration, so a test can assert on what
+// a write actually changed.
+func (s *Server) Wireless() []types.WirelessRadio {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	raw, ok := s.state[WirelessGroup+"."+MethodGetConfig]
+	if !ok {
+		return nil
+	}
+	var cfg struct {
+		Res []types.WirelessRadio `json:"res"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		s.t.Errorf("mock: stored wireless config is unreadable: %v", err)
+		return nil
+	}
+	return cfg.Res
+}
+
+// SetWireless replaces the stored wireless configuration from raw JSON.
+func (s *Server) SetWireless(raw string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state[WirelessGroup+"."+MethodGetConfig] = json.RawMessage(raw)
+}
+
+// applyRadioWriteLocked updates one radio's tuning, reporting whether the named
+// device existed. Only non-nil fields are written.
+func (s *Server) applyRadioWriteLocked(device string, channel *int, htmode, hwmode, txpower *string) bool {
+	raw, ok := s.state[WirelessGroup+"."+MethodGetConfig]
+	if !ok {
+		return false
+	}
+	var cfg struct {
+		DFSSupport bool                  `json:"dfs_support"`
+		Res        []types.WirelessRadio `json:"res"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		s.t.Errorf("mock: stored wireless config is unreadable: %v", err)
+		return false
+	}
+
+	found := false
+	for i := range cfg.Res {
+		if cfg.Res[i].Device != device {
+			continue
+		}
+		found = true
+		if channel != nil {
+			cfg.Res[i].Channel = *channel
+		}
+		if htmode != nil {
+			cfg.Res[i].HTMode = *htmode
+		}
+		if hwmode != nil {
+			cfg.Res[i].HWMode = *hwmode
+		}
+		if txpower != nil {
+			cfg.Res[i].TXPower = *txpower
+		}
+	}
+	if !found {
+		return false
+	}
+
+	updated, err := json.Marshal(cfg)
+	if err != nil {
+		s.t.Errorf("mock: marshal wireless config: %v", err)
+		return false
+	}
+	s.state[WirelessGroup+"."+MethodGetConfig] = updated
+	return true
+}
+
+// applyWirelessWriteLocked updates one interface in the stored config, reporting
+// whether the named interface existed. Only non-nil fields are written, matching
+// wifi.set_config's partial-update semantics.
+func (s *Server) applyWirelessWriteLocked(name string, ssid, key, encryption *string, hidden, enabled *bool) bool {
+	raw, ok := s.state[WirelessGroup+"."+MethodGetConfig]
+	if !ok {
+		return false
+	}
+	var cfg struct {
+		Res []types.WirelessRadio `json:"res"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		s.t.Errorf("mock: stored wireless config is unreadable: %v", err)
+		return false
+	}
+
+	found := false
+	for i := range cfg.Res {
+		for j := range cfg.Res[i].Ifaces {
+			if cfg.Res[i].Ifaces[j].Name != name {
+				continue
+			}
+			found = true
+			if ssid != nil {
+				cfg.Res[i].Ifaces[j].SSID = *ssid
+			}
+			if key != nil {
+				cfg.Res[i].Ifaces[j].Key = *key
+			}
+			if encryption != nil {
+				cfg.Res[i].Ifaces[j].Encryption = *encryption
+			}
+			if hidden != nil {
+				cfg.Res[i].Ifaces[j].Hidden = *hidden
+			}
+			if enabled != nil {
+				cfg.Res[i].Ifaces[j].Enabled = *enabled
+			}
+		}
+	}
+	if !found {
+		return false
+	}
+
+	updated, err := json.Marshal(cfg)
+	if err != nil {
+		s.t.Errorf("mock: marshal wireless config: %v", err)
+		return false
+	}
+	s.state[WirelessGroup+"."+MethodGetConfig] = updated
+	return true
+}
+
+// SetClients replaces the stored client list.
+//
+// The wireless-session guard reads this to decide whether the calling session
+// arrives over a radio, so a test that seeds it is describing the network the
+// caller is standing on.
+func (s *Server) SetClients(clients []types.Client) {
+	raw, err := json.Marshal(map[string]any{"clients": clients})
+	if err != nil {
+		s.t.Fatalf("mock: marshal clients: %v", err)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state[ClientGroup+"."+MethodGetList] = raw
 }

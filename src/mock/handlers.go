@@ -31,8 +31,15 @@ const (
 	// HostsGroup carries the router's hosts file, which is where DNS names live.
 	HostsGroup = "dns"
 
+	// WirelessGroup carries SSIDs and passphrases.
+	WirelessGroup = "wifi"
+
 	MethodGetHost = "get_host"
 	MethodSetHost = "set_host"
+
+	// MethodGetConfig and MethodSetWirelessConfig read and write wireless identity.
+	MethodGetConfig         = "get_config"
+	MethodSetWirelessConfig = "set_config"
 
 	MethodSetConfigList = "set_config"
 
@@ -150,6 +157,76 @@ func (s *Server) handleCall(w http.ResponseWriter, req *request) {
 			return
 		}
 		s.applyBindWriteLocked(w, req, method, params[3])
+		return
+	}
+
+	// wifi.set_config writes one interface's fields, identified by iface_name.
+	if group == WirelessGroup && method == MethodSetWirelessConfig {
+		if len(params) < 4 {
+			s.writeErrorLocked(w, req.ID, CodeBadRequest, "set_config requires args")
+			return
+		}
+		var args struct {
+			IfaceName  string  `json:"iface_name"`
+			SSID       *string `json:"ssid"`
+			Key        *string `json:"key"`
+			Encryption *string `json:"encryption"`
+			Hidden     *bool   `json:"hidden"`
+			Enabled    *bool   `json:"enabled"`
+
+			Device  string  `json:"device"`
+			Channel *int    `json:"channel"`
+			HTMode  *string `json:"htmode"`
+			HWMode  *string `json:"hwmode"`
+			TXPower *string `json:"txpower"`
+		}
+		if err := json.Unmarshal(params[3], &args); err != nil {
+			s.writeErrorLocked(w, req.ID, CodeBadRequest, "bad set_config args")
+			return
+		}
+		// The firmware scopes these fields two ways: interface-scoped fields require
+		// iface_name, radio-scoped ones require device. Reproducing that pairing rule
+		// means a test cannot pass on a call the device would reject for omitting the
+		// key that scopes the write.
+		radioScoped := args.Channel != nil || args.HTMode != nil ||
+			args.HWMode != nil || args.TXPower != nil
+		ifaceScoped := args.SSID != nil || args.Key != nil ||
+			args.Encryption != nil || args.Hidden != nil || args.Enabled != nil
+
+		if ifaceScoped && args.IfaceName == "" {
+			s.writeErrorLocked(w, req.ID, CodeBadRequest, "Invalid params (iface_name required)")
+			return
+		}
+		if radioScoped && args.Device == "" {
+			s.writeErrorLocked(w, req.ID, CodeBadRequest, "Invalid params (device required)")
+			return
+		}
+		if !ifaceScoped && !radioScoped {
+			s.writeErrorLocked(w, req.ID, CodeBadRequest, "Invalid params (nothing to set)")
+			return
+		}
+		if args.SSID != nil && (*args.SSID == "" || len(*args.SSID) > types.MaxSSIDLength) {
+			s.writeErrorLocked(w, req.ID, CodeBadRequest, "Invalid params (ssid length)")
+			return
+		}
+		if args.Key != nil && (len(*args.Key) < types.MinKeyLength || len(*args.Key) > types.MaxKeyLength) {
+			s.writeErrorLocked(w, req.ID, CodeBadRequest, "Invalid params (key length)")
+			return
+		}
+		if radioScoped {
+			if !s.applyRadioWriteLocked(args.Device, args.Channel, args.HTMode, args.HWMode, args.TXPower) {
+				s.writeErrorLocked(w, req.ID, CodeNotFound, "device not found")
+				return
+			}
+		}
+		if ifaceScoped {
+			if !s.applyWirelessWriteLocked(args.IfaceName, args.SSID, args.Key,
+				args.Encryption, args.Hidden, args.Enabled) {
+				s.writeErrorLocked(w, req.ID, CodeNotFound, "interface not found")
+				return
+			}
+		}
+		s.writeResultLocked(w, req.ID, map[string]any{"err_code": 0})
 		return
 	}
 

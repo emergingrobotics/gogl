@@ -23,7 +23,7 @@ python3 scripts/generate-api-docs.py /tmp/gl-api-description.json
 ## What is actually verified
 
 The description is GL.iNet's documentation for the firmware line as a whole, not
-for any one device. 22 endpoints were confirmed by calling them
+for any one device. 23 endpoints were confirmed by calling them
 against a **GL-SFT1200 (Opal) running firmware 4.3.28**, and several documented
 endpoints are absent on it. Each method below is marked accordingly.
 
@@ -83,4 +83,4 @@ for authentication, error codes, and the hardware-verified essentials.
 | [`vpn_policy`](reference/vpn_policy.md) | 10 | - | VPN Policy |
 | [`wg_client`](reference/wg_client.md) | 24 | - | Wireguard Client API |
 | [`wg_server`](reference/wg_server.md) | 18 | - | Wireguard Server API |
-| [`wifi`](reference/wifi.md) | 4 | 2 | WiFi related operations |
+| [`wifi`](reference/wifi.md) | 4 | 3 | WiFi related operations |
