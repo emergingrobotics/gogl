@@ -1,5 +1,11 @@
 package types
 
+import (
+	"strconv"
+	"strings"
+	"time"
+)
+
 // Interface values the router reports in a client's Iface field. Confirmed
 // against a GL-SFT1200 on firmware 4.3.28: wired clients report "cable", wireless
 // ones report the band they are associated on.
@@ -28,6 +34,15 @@ type Client struct {
 
 	// Blocked reports whether the router is blocking this client.
 	Blocked bool `json:"blocked,omitempty"`
+
+	// OnlineTime is when the client came online, verbatim as the firmware reports it.
+	//
+	// A string because that is what the API description calls it, and the format is
+	// uncaptured: it may be a unix timestamp, or seconds elapsed, or a formatted date.
+	// GL.iNet is not consistent about this -- network.get_dhcp_leases calls its field
+	// "expires" and reports seconds remaining, not a timestamp -- so the value is kept
+	// unparsed and rendered by SinceOnline, which says what it does not know.
+	OnlineTime string `json:"online_time,omitempty"`
 
 	// RXBytes and TXBytes are cumulative totals. The firmware also reports
 	// instantaneous rx/tx rates, which this type deliberately omits: a byte total
@@ -61,3 +76,41 @@ func (c *Client) Band() string {
 	}
 	return c.Iface
 }
+
+// SinceOnline renders OnlineTime for a human.
+//
+// The format is uncaptured, so this recognises the two plausible integer readings and
+// otherwise returns the value untouched. Printing a guess as though it were known is how
+// a lease "expires" field got rendered as a 1970 date earlier in this project.
+//
+// The second return reports whether the value was understood, so a caller can choose to
+// show nothing rather than something meaningless.
+func (c *Client) SinceOnline(now time.Time) (string, bool) {
+	raw := strings.TrimSpace(c.OnlineTime)
+	if raw == "" {
+		return "", false
+	}
+
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		// Not an integer: possibly a formatted date. Pass it through rather than
+		// discard information we cannot classify.
+		return raw, true
+	}
+
+	switch {
+	case n <= 0:
+		return "", false
+	case n >= unixTimestampFloor:
+		// Large enough to only make sense as seconds since the epoch.
+		return now.Sub(time.Unix(n, 0)).Truncate(time.Second).String(), true
+	default:
+		// Small enough to be an elapsed count rather than an absolute time.
+		return (time.Duration(n) * time.Second).String(), true
+	}
+}
+
+// unixTimestampFloor is 2001-09-09, the point past which an integer is far more likely
+// to be a unix timestamp than a count of elapsed seconds. A device claiming 31 years of
+// uptime is not the reading to prefer.
+const unixTimestampFloor = 1_000_000_000

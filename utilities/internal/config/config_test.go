@@ -27,10 +27,9 @@ host             = "192.168.8.1"
 domain           = "herlein.me"
 password_command = "printf secret"
 
-[routers.openwrt-one]
-host    = "192.168.1.1"
-backend = "openwrt"
-port    = 8080
+[routers.lab]
+host = "192.168.4.1"
+port = 8080
 `
 
 func TestLoad(t *testing.T) {
@@ -42,16 +41,16 @@ func TestLoad(t *testing.T) {
 	if f.Default != "player-test" || f.Output != "json" {
 		t.Errorf("top level = %+v", f)
 	}
-	if got := f.Names(); !reflect.DeepEqual(got, []string{"openwrt-one", "player-test"}) {
+	if got := f.Names(); !reflect.DeepEqual(got, []string{"lab", "player-test"}) {
 		t.Errorf("Names = %v, want sorted", got)
 	}
 
-	r := f.Routers["openwrt-one"]
-	if r.Host != "192.168.1.1" || r.Backend != BackendOpenWrt || r.Port != 8080 {
-		t.Errorf("openwrt-one = %+v", r)
+	r := f.Routers["lab"]
+	if r.Host != "192.168.4.1" || r.Port != 8080 {
+		t.Errorf("lab = %+v", r)
 	}
 	// The map key must reach the struct, or errors cannot name the router.
-	if r.Name() != "openwrt-one" {
+	if r.Name() != "lab" {
 		t.Errorf("Name() = %q", r.Name())
 	}
 }
@@ -83,8 +82,8 @@ func TestResolve(t *testing.T) {
 		t.Errorf("default = %v, %v", byDefault, err)
 	}
 
-	byName, err := f.Resolve("openwrt-one")
-	if err != nil || byName.Name() != "openwrt-one" {
+	byName, err := f.Resolve("lab")
+	if err != nil || byName.Name() != "lab" {
 		t.Errorf("named = %v, %v", byName, err)
 	}
 }
@@ -100,7 +99,7 @@ func TestResolveUnknownNamesTheRealOnes(t *testing.T) {
 	if err == nil {
 		t.Fatal("an unknown router was accepted")
 	}
-	for _, want := range []string{"player-test", "openwrt-one"} {
+	for _, want := range []string{"player-test", "lab"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error does not list %q: %v", want, err)
 		}
@@ -140,7 +139,6 @@ func TestResolveAmbiguousWithoutDefault(t *testing.T) {
 // time, when a write may already be in flight.
 func TestLoadRejectsBadFiles(t *testing.T) {
 	tests := map[string]string{
-		"unknown backend":      "[routers.a]\nhost=\"1.2.3.4\"\nbackend=\"ssh\"\n",
 		"router with no host":  "[routers.a]\ndomain=\"x.test\"\n",
 		"default names naught": "default=\"ghost\"\n[routers.a]\nhost=\"1.2.3.4\"\n",
 		"bad output":           "output=\"yaml\"\n[routers.a]\nhost=\"1.2.3.4\"\n",

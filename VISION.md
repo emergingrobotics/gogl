@@ -50,28 +50,44 @@ where every method is marked verified, absent, or untested.
 2. **Every endpoint MUST be supported in the mock server** - Tests use the mock, not real hardware.
 3. **No phase advancement without 100% test coverage** - Complete and test each phase before moving on.
 4. **Phases are sequential** - Follow `docs/plan.md` in order.
-5. **Structured transports only** - Every operation goes through a typed, structured channel,
-   so the whole surface stays reachable by an in-process mock and no hardware appears in the
-   test suite. **Never build a command string from user-supplied data.** Anything no structured
-   channel can express is a documented gap, never a shell workaround.
+5. **Structured transports only** - Every operation goes through GL.iNet's JSON-RPC API, so
+   the whole surface stays reachable by an in-process mock and no hardware appears in the test
+   suite. **Never build a command string from user-supplied data.** Anything the API cannot
+   express is a documented gap, never a shell workaround.
 
-   This rule was inherited from `gofi`, where it read "no SSH, no UCI, no shell" and made sense
-   for a device whose configuration lives behind a controller API. It was carried across without
-   asking whether it fit a device whose entire configuration lives in UCI, and the justification
-   written for it -- that SSH and shell are unmockable -- is false: `uci show` is text in and
-   text out, and easier to mock than the HTTP server this project already mocks.
+   This rule was inherited from `gofi`, where it read "no SSH, no UCI, no shell", and the
+   justification originally written for it here -- that SSH and shell are unmockable -- was
+   false. `uci show` is text in and text out, easier to mock than the HTTP server this project
+   already mocks. The rule is kept for the two reasons that actually hold.
 
-   What the rule actually protects is worth keeping. A structured API is a capability boundary:
-   it can set a DHCP pool and cannot delete `/etc`, which bounds the blast radius of a bug in a
-   tool built for unattended provisioning. And it keeps user data out of shell command strings,
-   which matters here because a quote in a hostname can corrupt dnsmasq's configuration -- the
-   reason `gogl` rejects such names rather than escaping them.
-
-   Both properties survive UCI over `POST /ubus`, which is structured JSON over HTTP. Neither
-   survives interpolating `uci set foo='...'` into a remote shell. So the line is drawn at
-   structure, not at protocol.
+   A structured API is a capability boundary: it can set a DHCP pool and cannot delete `/etc`,
+   which bounds the blast radius of a bug in a tool built for unattended provisioning. And it
+   keeps user data out of shell command strings, which matters here because a quote in a
+   hostname can corrupt dnsmasq's configuration -- the reason `gogl` rejects such names rather
+   than escaping them.
 
 ## Scope
+
+**GL.iNet firmware 4.x only. This is not a portable OpenWrt tool and will not become one.**
+
+The devices run OpenWrt underneath, and roughly 59% of GL.iNet's 313 API methods wrap standard
+OpenWrt or Linux subsystems, so a UCI-over-`/ubus` backend was considered and specified. It was
+dropped deliberately: supporting arbitrary OpenWrt hardware means two implementations of every
+service, two credential paths, two sets of field-name translations, and a name that no longer
+describes the tool -- in exchange for devices this project does not target. Focus is worth more.
+
+The practical consequences, all of them simplifications:
+
+- `src/types` may hold GL.iNet's wire shapes without apology. `IntBool` exists because the
+  firmware sends `enable: 1`; `HTModes` is its capability object. These were once described here
+  as vendor artifacts leaking into a neutral layer. There is no neutral layer, so they are simply
+  the domain.
+- The DNS domain living in a marker line inside the host file is the answer, not a workaround
+  pending a better backend. GL.iNet's API exposes no dnsmasq domain setting and `POST /ubus`
+  returns 404 on this hardware, so there is nothing better to wait for.
+- `wan` can model GL.iNet's own concepts -- `repeater`, `tethering`, `modem`, `netmode` -- with
+  no question of how vendor-specific commands would fit a portable tool.
+- The name and the logo stay.
 
 `gogl` v1 manages, on a single flat LAN with no VLANs:
 

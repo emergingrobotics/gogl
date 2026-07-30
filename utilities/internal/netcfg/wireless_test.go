@@ -291,8 +291,8 @@ func TestRunSetWirelessKeyLeavesEverythingElseAlone(t *testing.T) {
 	}
 }
 
-// The whole reason optionalBool exists: false must be writable, and distinguishable
-// from absent.
+// False must be writable and distinguishable from absent. The CLI gets that from
+// pflag's Changed(); this asserts the layer underneath honours the distinction.
 func TestRunSetWirelessWritesFalse(t *testing.T) {
 	s, c := wirelessClient(t, "cable")
 
@@ -391,8 +391,8 @@ func TestRunSetWirelessRadioTuning(t *testing.T) {
 	}
 }
 
-// Channel 0 means auto, so it cannot double as "unset". This is why optionalInt
-// exists rather than a zero sentinel.
+// Channel 0 means auto, so it cannot double as "unset" -- which is why the CLI decides
+// by Changed() rather than by comparing against zero.
 func TestRunSetWirelessChannelZeroMeansAuto(t *testing.T) {
 	s, c := wirelessClient(t, "cable")
 

@@ -430,6 +430,11 @@ model repeater mode.
 
 ### The ubus / LuCI path, and why it is unavailable here
 
+**Recorded as a closed door, not a route forward.** `gogl` targets GL.iNet 4.x only and will not
+grow a generic OpenWrt backend; see [Scope](VISION.md#scope). This section stays because it
+answers a question that will keep coming up — "the device runs OpenWrt, why not just use UCI?" —
+and because it is the evidence behind the domain-in-a-marker-line design.
+
 OpenWrt exposes UCI over HTTP through `uhttpd` at `POST /ubus`, JSON-RPC 2.0, brokered by
 `rpcd` with ACLs from `/usr/share/rpcd/acl.d/*.json`. That path *can* set the dnsmasq domain,
 which the GL.iNet API cannot:

@@ -9,10 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	gogl "github.com/emergingrobotics/gogl/src"
+	"github.com/emergingrobotics/gogl/utilities/internal/config"
 )
 
 // DefaultPort is 80, not 443, because that is what GL.iNet firmware serves. A
@@ -49,49 +49,7 @@ type Flags struct {
 	Password string
 	Username string
 
-	// Version reports whether --version was given.
-	Version bool
-
 	warnings []string
-}
-
-// Register adds the shared flags to fs.
-func (f *Flags) Register(fs *flag.FlagSet) {
-	host := os.Getenv(EnvHost)
-	fs.StringVar(&f.Host, "host", host, "router host address")
-	fs.StringVar(&f.Host, "H", host, "router host address (shorthand)")
-	fs.IntVar(&f.Port, "port", DefaultPort, "router port")
-	fs.IntVar(&f.Port, "p", DefaultPort, "router port (shorthand)")
-	fs.BoolVar(&f.HTTPS, "https", false, "use HTTPS instead of HTTP")
-	fs.BoolVar(&f.Secure, "secure", false, "under --https, enforce TLS certificate verification")
-	fs.BoolVar(&f.Secure, "k", false, "under --https, enforce TLS certificate verification (shorthand)")
-	fs.BoolVar(&f.Version, "version", false, "print the build version and exit")
-}
-
-// ShowVersion prints the build identity if --version was given, and reports whether it
-// did. A caller returns immediately when it reports true.
-//
-// Returned rather than exiting, because a library that calls os.Exit takes a decision
-// that belongs to main.
-func (f *Flags) ShowVersion(program string) bool {
-	if !f.Version {
-		return false
-	}
-	PrintVersion(os.Stdout, program)
-	return true
-}
-
-// Parse parses args with fs, tolerating flags written after a positional
-// argument.
-//
-// Go's flag package stops parsing at the first operand, so "goglps --set FILE
-// --dry-run" would silently discard --dry-run and perform a live write. That is
-// not an acceptable failure mode for a flag whose entire purpose is to avoid
-// writing, so operands are moved to the end before parsing.
-//
-// Everything after a bare "--" is treated as an operand, per convention.
-func Parse(fs *flag.FlagSet, args []string) error {
-	return fs.Parse(reorderArgs(fs, args))
 }
 
 // reorderArgs returns args with all flags (and their values) before all operands.
@@ -144,6 +102,12 @@ func takesValue(fs *flag.FlagSet, arg string) bool {
 
 // Validate checks the flags and fills in the environment-supplied values.
 func (f *Flags) Validate() error {
+	// The host is read here as well as in the command layer, so that Validate holds the
+	// same contract for all three settings. Register used to seed it from the
+	// environment; deleting Register left this as the only inconsistency of the three.
+	if f.Host == "" {
+		f.Host = os.Getenv(EnvHost)
+	}
 	if f.Password == "" {
 		f.Password = os.Getenv(EnvPassword)
 	}
@@ -236,15 +200,7 @@ func (f *Flags) Connect() (*gogl.Client, error) {
 // OUICacheDir returns the directory for cached IEEE OUI data, honouring
 // XDG_DATA_HOME per the XDG Base Directory Specification. No root access needed.
 func OUICacheDir() (string, error) {
-	base := os.Getenv("XDG_DATA_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("locate home directory: %w", err)
-		}
-		base = filepath.Join(home, ".local", "share")
-	}
-	return filepath.Join(base, "goglmac"), nil
+	return config.CacheDir()
 }
 
 // IsTerminal reports whether f is attached to a terminal, so a utility can

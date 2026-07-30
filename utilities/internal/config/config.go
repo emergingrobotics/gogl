@@ -27,14 +27,9 @@ const (
 	EnvHost     = "GL_ROUTER_IP"
 )
 
-// DefaultPort is 80: GL.iNet serves plain HTTP, and so does OpenWrt's uhttpd.
+// DefaultPort is 80, which is what GL.iNet firmware serves. Not 443: a habit carried
+// over from other vendors' controllers would fail here.
 const DefaultPort = 80
-
-// Backends gogl can speak.
-const (
-	BackendGLiNet  = "glinet"
-	BackendOpenWrt = "openwrt"
-)
 
 // File is a parsed configuration file.
 type File struct {
@@ -56,9 +51,6 @@ type Router struct {
 	Host     string `toml:"host"`
 	Port     int    `toml:"port"`
 	Username string `toml:"username"`
-
-	// Backend is "glinet" or "openwrt". Empty means probe and cache.
-	Backend string `toml:"backend"`
 
 	// HTTPS and Insecure control TLS. Both default false, because these devices
 	// serve plain HTTP on port 80.
@@ -168,12 +160,6 @@ func (f *File) validate() error {
 		}
 	}
 	for name, r := range f.Routers {
-		switch r.Backend {
-		case "", BackendGLiNet, BackendOpenWrt:
-		default:
-			return fmt.Errorf("routers.%s.backend = %q, want %q or %q",
-				name, r.Backend, BackendGLiNet, BackendOpenWrt)
-		}
 		if r.Host == "" {
 			return fmt.Errorf("routers.%s has no host", name)
 		}

@@ -4,9 +4,7 @@
 # utilities/internal/ -- reservations, netcfg, clients, profile -- so their logic and
 # tests survive the move to one command tree. See docs/DESIGN-V2.md.
 #
-# Empty until utilities/gogl exists. `make build` still compiles and tests the whole
-# module, which is where all the logic now lives.
-UTILITIES :=
+UTILITIES := gogl
 
 # All examples
 EXAMPLES := basic list reservations

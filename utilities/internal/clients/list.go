@@ -19,6 +19,14 @@ type Options struct {
 	// round trip against a small SoC.
 	ShowReserved bool
 
+	// IncludeOffline reports clients the router remembers but does not currently see.
+	//
+	// Off by default. The client list carries history: a router renumbered from
+	// 192.168.2.0/24 to 192.168.8.0/24 was still listing a station at 192.168.2.138,
+	// and showing that alongside live clients with no distinction is worse than not
+	// showing it at all.
+	IncludeOffline bool
+
 	// JSON selects machine-readable output.
 	JSON bool
 }
@@ -32,6 +40,9 @@ func List(ctx context.Context, client *gogl.Client, out io.Writer, opts Options)
 	keep := opts.Keep
 	if keep == nil {
 		keep = FilterAll
+	}
+	if !opts.IncludeOffline {
+		keep = and(keep, FilterOnline)
 	}
 
 	// Load the OUI database before touching the device. A stale-cache warning belongs

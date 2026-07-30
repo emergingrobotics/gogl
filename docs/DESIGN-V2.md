@@ -1,4 +1,4 @@
-# gogl v2: one binary, two backends
+# gogl v2: one binary
 
 **Status:** specification. Phase 2 complete, phase 1 partly complete. Written 2026-07-30.
 See [Phases](#phases) for exactly what has landed.
@@ -20,18 +20,18 @@ fourth capability or a better command tree. The ISC DHCP host-declaration format
 its own merits: it diffs, it reviews, it lives in git, and `gofips --get | gogl lan reservations
 import -` remains useful with no compatibility promise attached.
 
-**Two HTTP backends behind the existing service interfaces.** GL.iNet's `POST /rpc` for GL.iNet
-4.x, and UCI over `POST /ubus` for stock OpenWrt. See [Backends](#backends).
-
 **Configuration moves to TOML under XDG paths**, with named routers and a password command.
 
 ---
 
 ## Non-goals
 
-- **No SSH, still** — but for the reason in Critical Rule 5 as reworded, which is about structure
-  rather than protocol. If `/ubus` proves unavailable on a device we care about, the safe form is
-  `ubus call` with JSON on stdin, never interpolated `uci set`.
+- **GL.iNet firmware 4.x only.** A UCI-over-`/ubus` backend for generic OpenWrt was specified
+  here and then dropped: it would have meant two implementations of every service, two credential
+  paths, and two sets of field translations, for hardware this project does not target. See
+  [Scope](../VISION.md#scope).
+- **No SSH.** Per Critical Rule 5: the API is a capability boundary, and user data never enters a
+  command string.
 - **No root on the operator's machine.** Nothing this tool does needs it; it installs to
   `~/.local/bin`.
 - **Not a full router backup.** `gogl profile` captures a network, not a device. `sysupgrade -b`
@@ -44,38 +44,38 @@ import -` remains useful with no compatibility promise attached.
 Verified column: whether the underlying endpoint has been exercised against real hardware. It is
 the scheduling input, not a wish list.
 
-| Command | GL.iNet | OpenWrt |
-|---|---|---|
-| `gogl lan show [--guest]` | verified | untested |
-| `gogl lan set [--guest] --ip --mask --pool-start --pool-end [--force]` | verified | untested |
-| `gogl lan leases` | verified | untested |
-| `gogl lan reservations list` | verified | untested |
-| `gogl lan reservations add --name --mac --ip` | verified | untested |
-| `gogl lan reservations rm --name\|--mac\|--ip` | verified | untested |
-| `gogl lan reservations clear` | verified | untested |
-| `gogl lan reservations export` | verified | untested |
-| `gogl lan reservations import <file> [--prune] [--dry-run]` | verified | untested |
-| `gogl lan dns show` | verified | untested |
-| `gogl lan dns set --domain <d>` | workaround | **native** |
-| `gogl lan dns add <name> <ip>` / `rm <name>` / `clear` | verified | untested |
-| `gogl radio list` / `show --band 5` | verified | untested |
-| `gogl radio set --band 5 --channel --width --hwmode --power` | verified | untested |
-| `gogl wifi list` / `show --band 5 [--guest]` | verified | untested |
-| `gogl wifi set --band 5 [--guest] --ssid --passphrase --encryption --hidden --enabled` | verified | untested |
-| `gogl clients list [--band 5\|--wired] [--reserved]` | verified | untested |
-| `gogl clients vendor <mac>` | offline | offline |
-| `gogl profile export [--with-keys]` / `import <file> [--wireless]` | verified | untested |
-| `gogl system info` | verified | untested |
-| `gogl system reboot` | **not captured** | untested |
-| `gogl access check` | verified | untested |
-| `gogl access passwd` | **not captured** | untested |
-| `gogl access users list\|add\|rm` | **not captured** | n/a |
-| `gogl wan show` | **not captured** | untested |
-| `gogl wan set-mode dhcp\|static\|pppoe` | **not captured** | untested |
-| `gogl wan repeater scan\|connect` | **not captured** | n/a |
-| `gogl wan tethering show` / `wan modem show` | **not captured** | n/a |
-| `gogl config show` / `routers` / `init` | local | local |
-| `gogl completion bash\|zsh\|fish` | free | free |
+| Command | GL.iNet |
+|---|---|
+| `gogl lan show [--guest]` | verified |
+| `gogl lan set [--guest] --ip --mask --pool-start --pool-end [--force]` | verified |
+| `gogl lan leases` | verified |
+| `gogl lan reservations list` | verified |
+| `gogl lan reservations add --name --mac --ip` | verified |
+| `gogl lan reservations rm --name\|--mac\|--ip` | verified |
+| `gogl lan reservations clear` | verified |
+| `gogl lan reservations export` | verified |
+| `gogl lan reservations import <file> [--prune] [--dry-run]` | verified |
+| `gogl lan dns show` | verified |
+| `gogl lan dns set --domain <d>` | workaround |
+| `gogl lan dns add <name> <ip>` / `rm <name>` / `clear` | verified |
+| `gogl radio list` / `show --band 5` | verified |
+| `gogl radio set --band 5 --channel --width --hwmode --power` | verified |
+| `gogl wifi list` / `show --band 5 [--guest]` | verified |
+| `gogl wifi set --band 5 [--guest] --ssid --passphrase --encryption --hidden --enabled` | verified |
+| `gogl clients list [--band 5\|--wired] [--reserved]` | verified |
+| `gogl clients vendor <mac>` | offline |
+| `gogl profile export [--with-keys]` / `import <file> [--wireless]` | verified |
+| `gogl system info` | verified |
+| `gogl system reboot` | **not captured** |
+| `gogl access check` | verified |
+| `gogl access passwd` | **not captured** |
+| `gogl access users list\|add\|rm` | **not captured** |
+| `gogl wan show` | **not captured** |
+| `gogl wan set-mode dhcp\|static\|pppoe` | **not captured** |
+| `gogl wan repeater scan\|connect` | **not captured** |
+| `gogl wan tethering show` / `wan modem show` | **not captured** |
+| `gogl config show` / `routers` / `init` | local |
+| `gogl completion bash\|zsh\|fish` | free |
 
 `lan reservations` accepts `res` as an alias, since four words before an argument is a lot.
 
@@ -109,83 +109,45 @@ The same resolution serves `wifi`, where interface names are worse than device n
 
 ### Guest
 
-A `--guest` flag on `lan` and `wifi`, not an area. Both backends model guest the same way gogl
-will: an interface variant. GL.iNet returns `lan` and `guest` from `lan.get_config_list`; UCI has
-separate `interface` and `wifi-iface` sections. One concept, two facets, no duplicated verbs.
+A `--guest` flag on `lan` and `wifi`, not an area. That follows the firmware's own model:
+`lan.get_config_list` returns `lan` and `guest` as interface variants, and guest SSIDs are more
+entries in `wifi`'s `ifaces` array. One concept, two facets, no duplicated verbs.
 
 ---
 
-## Backends
+## One backend, deliberately
 
-```mermaid
-graph TB
-    CLI["cmd/ — cobra tree"] --> SVC
-    subgraph SVC["src/services — interfaces, unchanged"]
-        N[NetworkService]
-        R[ReservationService]
-        H[HostsService]
-        W[WirelessService]
-        C[ClientService]
-        S[SystemService]
-    end
-    SVC --> GL["backend/glinet<br/>POST /rpc"]
-    SVC --> OW["backend/openwrt<br/>POST /ubus"]
-    GL --> D1["GL.iNet 4.x"]
-    OW --> D2["OpenWrt + uhttpd + rpcd"]
-```
+The service interfaces in `src/services` are semantic rather than wire-shaped, which made a
+second backend architecturally cheap — and it was specified here, over UCI on `POST /ubus`, for
+generic OpenWrt. It is dropped.
 
-The service interfaces are already semantic rather than wire-shaped, which is what makes this
-possible without redesigning them. A second backend is **not** a transport swap: "read the LAN
-config" is one `lan.get_config_list` call on GL.iNet and a `uci get` on `network` plus one on
-`dhcp` under OpenWrt. So each backend implements the service interfaces itself and shares only
-`src/types` and the CLI.
+The reasoning is worth keeping, because it explains field names that otherwise look arbitrary.
+The devices run OpenWrt 18.06, and every group `gogl` touches — `lan`, `dns`, `wifi`, `clients`,
+`network`, `system` — wraps UCI `network`, `dhcp`, `wireless` and the `hosts(5)` file. So GL.iNet
+is translating standard concepts into its own JSON, and the translation is lossy in places:
 
-### Why both are HTTP
-
-59% of GL.iNet's 313 methods wrap standard OpenWrt or Linux subsystems; 41% are their own
-inventions (`cloud`, `s2s`, `rtty`, `nas_web`, the hardware groups, their WAN-source
-abstraction). **Every group gogl touches is in the first bucket** — `lan`, `dns`, `wifi`,
-`clients`, `network`, `system` are UCI `network`, `dhcp`, `wireless` and the `hosts(5)` file.
-
-So the domain model is OpenWrt. Only the plumbing is GL.iNet's, and `/ubus` supplies the other
-plumbing over the same protocol with the same mockability.
-
-### Divergences to expect
-
-Same concept, different representation. These are the ones already known:
-
-| Concept | GL.iNet API | UCI |
+| Concept | GL.iNet API | UCI underneath |
 |---|---|---|
 | DHCP pool | `start` + `end`, both addresses | `start` + `limit`, an offset and a **count** |
 | Channel width | `20`, `40`, `80`, `auto` | `htmode`: `HT20`, `VHT80`, `HE80` |
 | dnsmasq domain | **absent** | `dhcp.@dnsmasq[0].domain` |
-| Hardware mode | `11a/n/ac`, slash-joined | `hwmode`: `11a`, plus `htmode` carrying the rest |
-| Static lease | `static_bind`: `mac`, `ip`, `name` | `config host`: `mac`, `ip`, `name` |
+| Hardware mode | `11a/n/ac`, slash-joined | `hwmode` plus `htmode` |
 
-The pool one is a real translation, not a rename, and getting it wrong yields a DHCP server that
-serves the wrong range. The width vocabulary is why `VHT80` felt natural and was wrong on
-GL.iNet — that was UCI convention leaking into a GL.iNet API.
+That table is documentation, not a compatibility plan. It is why `VHT80` felt like the natural
+value and was wrong — UCI vocabulary leaking into a GL.iNet API — and why the DHCP pool needs a
+real translation rather than a rename. Reading it as "we could support both" is what this section
+now exists to correct.
 
-### The domain workaround becomes backend-specific
+Two consequences follow, both simplifications:
 
-gogl carries its DNS domain in a marker line inside the host file because GL.iNet exposes no
-domain setter and `/ubus` is 404 on the SFT1200. Under the OpenWrt backend that hack is
-unnecessary: set `dhcp.@dnsmasq[0].domain` and dnsmasq appends the suffix itself.
+**`src/types` holds GL.iNet's shapes without apology.** `IntBool` exists because the firmware
+sends `enable: 1`; `HTModes` is its capability object with the narrower-widths inference on top.
+An earlier version of this document listed those as vendor artifacts to be moved out of a neutral
+layer. There is no neutral layer, so that work is cancelled.
 
-So the marker line is a GL.iNet workaround, not a design. `HostsService.SetDomain` stays in the
-interface; the two backends implement it differently, and the OpenWrt one is the honest version.
-
-### Three wire artifacts must leave `src/types`
-
-`src/types` is meant to be vendor-neutral and currently is not:
-
-- **`IntBool`** exists only because GL.iNet sends `enable: 1` rather than `true`
-- **`HTModes`** is GL.iNet's capability object, with the narrower-widths inference on top
-- **`BeginMarker` / domain-in-marker-line** is a workaround for a GL.iNet gap
-
-All three belong in `backend/glinet`. Cheap now, expensive after a second backend exists.
-
----
+**The domain-in-a-marker-line is the answer, not a workaround.** GL.iNet exposes no dnsmasq domain
+setting, `POST /ubus` returns 404 on this hardware, and no better mechanism is coming. It stops
+being described as temporary.
 
 ## Configuration
 
@@ -197,16 +159,14 @@ output  = "text"            # or "json"
 
 [routers.player-test]
 host             = "192.168.8.1"
-backend          = "glinet"      # or "openwrt"; default: probe
 domain           = "herlein.me"
 password_command = "pass show routers/player-test"
 
-[routers.openwrt-one]
-host    = "192.168.1.1"
-backend = "openwrt"
+[routers.lab]
+host = "192.168.4.1"
 ```
 
-`gogl --router openwrt-one lan show`, or omit `--router` for the default.
+`gogl --router lab lan show`, or omit `--router` for the default.
 
 **Password resolution, highest wins:** `--password-command` flag, `GL_PASSWORD` env,
 `password_command` in TOML, interactive prompt without echo. Never a `--password` flag: a secret
@@ -215,10 +175,6 @@ holds for the router password and violated for `--set-key`.
 
 `password_command` executes a command named in a file the user owns at `0600` — the same trust
 model as `git`'s `credential.helper` and `restic`'s `--password-command`.
-
-**Backend detection.** With `backend` unset, probe: `POST /rpc` with a `challenge` call, then
-`POST /ubus` with a `session.login`. Cache the answer in the TOML on first success rather than
-probing every run.
 
 ### Paths
 
@@ -268,7 +224,7 @@ their shapes.
 Separate packages keep every namespace intact and need no renames at all.
 
 | Was | Is | Exported entry points |
-|---|---|---|
+|---|---|
 | `utilities/goglps` | `utilities/internal/reservations` | `Get`, `Set`, `Add`, `Del`, `Clear`, `SetDomain`, `ParseHosts`, `FormatHosts`, `Modes` |
 | `utilities/goglnet` | `utilities/internal/netcfg` | `Show`, `BuildReport`, `FormatText`, `FormatJSON`, `FormatWireless`, `SetNetwork`, `SetWireless`, `SetSSID`, `NetworkModes`, `WirelessModes` |
 | `utilities/goglmac` | `utilities/internal/clients` | `List`, `BuildEntries`, `FormatText`, `FormatJSON`, `FilterFor`, `LoadOUI`, `ParseOUI` |
@@ -295,34 +251,33 @@ This keeps 527 tests alive across the move.
 ### Phases
 
 1. **Command tree over verified endpoints.** `lan`, `radio`, `wifi`, `clients`, `profile`,
-   `system info`, `config`. GL.iNet backend only.
+   `system info`, `config`.
    - **Done:** the four utilities extracted to importable packages, tests intact.
-   - **Remaining:** `utilities/gogl` -- the cobra tree wiring those packages.
-2. **Done:** TOML config with named routers and `password_command`, XDG paths,
-   install to `~/.local/bin`, `make uninstall`, `--version`, `make check-docs`.
-3. **Capture pass** with `discovery/shape` for `wan`, `access`, `system reboot` on the SFT1200,
-   and the whole UCI surface on the OpenWrt One. See [`../TODO.md`](../TODO.md).
-4. **`backend/openwrt`** implementing the service interfaces over `/ubus`, plus moving the three
-   wire artifacts out of `src/types`.
-5. **`wan` and `access`**, from captures rather than from GL.iNet's descriptions.
+   - **Remaining:** `utilities/gogl` — the cobra tree wiring those packages.
+2. **Done:** TOML config with named routers and `password_command`, XDG paths, install to
+   `~/.local/bin`, `make uninstall`, `--version`, `make check-docs`.
+3. **Capture pass** on the SFT1200 for `wan`, `access` and `system reboot`, with
+   `discovery/shape`. See [`../TODO.md`](../TODO.md).
+4. **`wan` and `access`**, written from those captures rather than from GL.iNet's descriptions.
 
-Phases 1 and 2 are wiring on ground already verified. Nothing in 3–5 gets written before the
-capture exists, because building from that vendor description has been wrong three times:
-`dhcp.*` does not exist, `dns.set_host` rejects `(`, `)` and `=`, and `htmodes` is an object.
+Phase 1's remainder and phase 2 need no hardware. Nothing in 3 or 4 gets written before the
+capture exists, because building from the vendor description has been wrong three times: `dhcp.*`
+does not exist, `dns.set_host` rejects `(`, `)` and `=`, and `htmodes` is an object rather than
+an array.
 
----
+The former phases 4 and 5 — a `backend/openwrt` implementation, and moving GL.iNet wire types out
+of `src/types` — are **cancelled** with the portability goal.
 
 ## Open questions
 
-- **Name.** `gogl` is "Go GL.iNet". With an OpenWrt backend it is the wrong name, and renaming
-  after release is worse than before.
-- **`wan` shape.** Whether it stays one area or splits, and whether the GL.iNet-only WAN sources
-  (`repeater`, `tethering`, `modem`) belong under it or somewhere marked vendor-specific. Cannot
-  be settled before the capture.
-- **Whether `access users` survives.** It maps to GL.iNet's `acl` group, which has no OpenWrt
-  equivalent. Vendor-specific commands in a portable tool need a convention.
+- **`wan` shape.** Whether it stays one area, and how `repeater`, `tethering` and `modem` sit
+  under it. Cannot be settled before the capture. No longer complicated by "how do
+  vendor-specific commands fit a portable tool", since every command here is vendor-specific.
+- **`netcfg`'s `optionalBool`/`optionalInt`/`optionalString`.** Still tested, but pflag's
+  `Changed()` answers set-versus-unset natively. Expected to go when the command tree lands.
 
----
+Settled by the GL.iNet-only decision: the name stays `gogl`, the logo stays, and there is no
+convention needed for vendor-specific commands.
 
 ## Related
 
