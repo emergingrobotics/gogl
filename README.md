@@ -109,13 +109,16 @@ than a feature. `--del` and `--clear` remove both.
 
 # Part 1: Command-line programs
 
-Three tools, mirroring `gofi`'s three one-for-one.
+Four tools. The first three mirror `gofi`'s one-for-one, so that knowing one set means
+knowing the other. `goglcfg` has no counterpart: reproducing a whole network spans all
+three and belongs in none of them.
 
 | gogl | gofi counterpart | What it does | Writes? |
 |------|------------------|--------------|---------|
 | `goglps` | `gofips` | DHCP reservations, in ISC DHCP format | **yes** |
 | `goglnet` | `gofinet` | LAN address, DHCP pool, resolvers, wireless | **yes**, with `--set-*` |
 | `goglmac` | `gofimac` | Connected clients with IEEE OUI manufacturer lookup | no |
+| `goglcfg` | — | A whole network as a JSON profile: capture and apply | **yes**, on `--set` |
 
 **What gogl writes:** reservations, host-file entries and the DNS domain (`goglps`); the LAN
 address and DHCP pool, wireless identity and radio tuning (`goglnet --set-*`). **What it does
@@ -273,6 +276,7 @@ variables; see [Configuration](#configuration).
 | [`goglps`](#goglps--reservations-and-dns-names) | reservations, DNS names, the domain | all three |
 | [`goglnet`](#goglnet--network-and-wireless) | LAN, DHCP pool, leases, wireless | LAN address and pool, wireless identity and tuning |
 | [`goglmac`](#goglmac--connected-clients) | connected clients, OUI vendors | nothing |
+| [`goglcfg`](#goglcfg--whole-network-profiles) | everything the other three do | everything the other three do |
 
 Every write takes `--dry-run`, and a dry run performs every check the real write performs —
 including the refusals. A preview that approves what the write would reject is worse than no
@@ -519,6 +523,96 @@ goglmac -r              # which clients are worth reserving
 The OUI database is downloaded from IEEE and cached. A download failure is not fatal if a cache
 exists; if there is no cache, `goglmac` exits 1 rather than printing a table of blanks that
 looks like every device is from an unknown vendor.
+
+---
+
+### `goglcfg` — whole-network profiles
+
+Captures a router's reproducible configuration to JSON, and applies one back — onto the same
+router or a different one.
+
+```bash
+goglcfg --get > lab.json                 # capture
+goglcfg --set lab.json --dry-run         # preview
+goglcfg --set lab.json                   # apply
+goglcfg --set lab.json --wireless        # apply the wireless sections too
+```
+
+| Flag | Short | What it does |
+|------|-------|--------------|
+| `--get` | `-g` | Capture a profile to stdout |
+| `--set [file]` | `-s` | Apply a profile from a file, or stdin |
+| `--with-keys` | | With `--get`, include WiFi passphrases in cleartext |
+| `--wireless` | | With `--set`, apply the wireless sections; needs a wired session |
+| `--dry-run` | | Show what would change, change nothing |
+| `--force` | | Allow a subnet move while reservations exist |
+
+#### What a profile is, and is not
+
+**It is not a router image.** It carries what defines a *network* — LAN address and DHCP pool,
+reservations, DNS names and domain, wireless identity and radio tuning — and omits everything
+identifying a particular unit: the router's own MAC, serial number, uptime, lease state.
+
+That omission is the point. Those fields are exactly what makes a full config dump useless on a
+second router. Client MAC addresses *are* included, since a reservation is a MAC-to-IP binding
+and a profile without them would reproduce nothing.
+
+Every section comes from an endpoint verified against hardware. That is why the file is small:
+the API exposes 110 getters and 23 are verified, and a profile built on the rest would be
+guesswork. Lease time, upstream DNS servers, firewall, VPN and VLANs are absent because no
+verified endpoint writes them.
+
+#### Passphrases are omitted by default
+
+```bash
+goglcfg --get > lab.json              # no keys; safe to commit
+goglcfg --get --with-keys > lab.json  # keys in cleartext
+```
+
+An omitted key is not an empty key. On apply, a missing key is simply not written, which leaves
+whatever the target router already has — so a key-less profile is safe rather than destructive.
+That relies on `wifi.set_config` leaving unmentioned fields alone, which is verified on hardware.
+
+#### The apply order, and why a subnet move stops the run
+
+`--set` applies in a fixed order, each step placed where it is because doing it later fails:
+
+1. **Domain**, because reservation writes are refused without one.
+2. **Network**, because reservations must be inside the subnet before they are written.
+3. **Reservations**, then **DNS names**.
+4. **Wireless** last, opt-in — it is the step most likely to be refused, and failing there should
+   not undo the addressing having been applied.
+
+**If the profile's subnet differs from the router's, the run stops after step 2.** The router
+changes address mid-write, so nothing after it is reachable from that session:
+
+```
+network: 192.168.8.1/255.255.255.0 -> 192.168.4.1/255.255.255.0
+
+the router has moved to 192.168.4.1. The rest of the profile was not applied.
+resume with:  goglcfg -H 192.168.4.1 --set lab.json
+```
+
+Re-run at the new address and it completes. Reporting success for a run that wrote a third of the
+profile would be a lie. A pool-only difference is not a move, so that case runs straight through.
+
+The subnet move is refused while reservations exist unless `--force`, same as `goglnet`.
+
+#### Applying to a different model
+
+A model mismatch warns rather than fails:
+
+```
+warning: profile is from "mt3000", this router is "sft1200"
+  addresses and names are portable; wireless interface and radio names
+  may not exist on this model, and will be reported and skipped
+```
+
+Addresses and names carry over cleanly. Wireless is where models diverge — interface names, radio
+names, channel lists and hardware modes are all per-device and per-regulatory-domain. Interfaces
+the target does not have are reported and skipped, not treated as errors.
+
+`--set` is idempotent: a second run reports nothing to do and leaves the host file byte-identical.
 
 ---
 

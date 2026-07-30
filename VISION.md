@@ -50,17 +50,26 @@ where every method is marked verified, absent, or untested.
 2. **Every endpoint MUST be supported in the mock server** - Tests use the mock, not real hardware.
 3. **No phase advancement without 100% test coverage** - Complete and test each phase before moving on.
 4. **Phases are sequential** - Follow `docs/plan.md` in order.
-5. **No SSH, no shell** - Every operation goes through an HTTP API, so the entire surface
-   stays reachable by the mock server. Anything no HTTP API can express is a documented gap,
-   never a shell workaround.
+5. **Structured transports only** - Every operation goes through a typed, structured channel,
+   so the whole surface stays reachable by an in-process mock and no hardware appears in the
+   test suite. **Never build a command string from user-supplied data.** Anything no structured
+   channel can express is a documented gap, never a shell workaround.
 
-   Originally this rule said "no UCI" as well. UCI over `POST /ubus` is an HTTP API and would
-   have been admissible under the amended rule -- it is the only way to set dnsmasq's domain.
-   It is moot on this device regardless: `/ubus` returns 404, because nginx fronts the admin
-   interface rather than uhttpd. See
-   [`GL_INET_4X_API_DOCUMENTATION.md`](GL_INET_4X_API_DOCUMENTATION.md). SSH and shell remain
-   excluded: neither is mockable, and both put the tool outside what a locked-down device
-   permits.
+   This rule was inherited from `gofi`, where it read "no SSH, no UCI, no shell" and made sense
+   for a device whose configuration lives behind a controller API. It was carried across without
+   asking whether it fit a device whose entire configuration lives in UCI, and the justification
+   written for it -- that SSH and shell are unmockable -- is false: `uci show` is text in and
+   text out, and easier to mock than the HTTP server this project already mocks.
+
+   What the rule actually protects is worth keeping. A structured API is a capability boundary:
+   it can set a DHCP pool and cannot delete `/etc`, which bounds the blast radius of a bug in a
+   tool built for unattended provisioning. And it keeps user data out of shell command strings,
+   which matters here because a quote in a hostname can corrupt dnsmasq's configuration -- the
+   reason `gogl` rejects such names rather than escaping them.
+
+   Both properties survive UCI over `POST /ubus`, which is structured JSON over HTTP. Neither
+   survives interpolating `uci set foo='...'` into a remote shell. So the line is drawn at
+   structure, not at protocol.
 
 ## Scope
 
@@ -77,6 +86,8 @@ where every method is marked verified, absent, or untested.
 - **The DNS domain** - carried by gogl inside its block in the host file, because the firmware
   exposes no dnsmasq domain setting. Required before any reservation write.
 - **DHCP leases** - read-only, and the way to discover what is worth reserving.
+- **Whole-network profiles** - every writable section above, captured to JSON and applied back,
+  onto the same router or another one. See [Profiles](#profiles).
 - **Connected clients** - with independent IEEE OUI manufacturer lookup.
 - **Wireless identity** - SSID, passphrase, encryption, hidden and enabled state, per
   interface. Read and **written**.
@@ -250,6 +261,61 @@ on port 80. Reading them requires being on the router's network and holding the 
 which is the same bar as opening the admin panel, so this is not treated as a defect to work
 around. `gogl` does not log the raw payloads, and `goglnet` masks the key in its own output
 unless asked for it, because a passphrase on a terminal is a passphrase in a scrollback buffer.
+
+## Profiles
+
+`goglcfg` captures the writable sections as a JSON profile and applies one back. It is the
+fourth utility and has no `gofi` counterpart: the work spans `goglps`, `goglnet` and `goglmac`
+and belongs in none of them. The three-tool mirror exists so that knowing one set means knowing
+the other, not as a cap on what the project may contain.
+
+### A profile is a network, not a router
+
+It carries the LAN address and pool, reservations, DNS names and domain, wireless identity and
+radio tuning. It omits the router's own MAC, serial number, uptime and lease state -- the fields
+that make a full configuration dump worthless on a second unit, which is the case a profile
+exists to serve. Client MAC addresses are included: a reservation is a MAC-to-IP binding and a
+profile without them reproduces nothing.
+
+Every section comes from an endpoint verified against hardware. The API exposes 110 getters and
+23 are verified; a profile built on the remainder would be guesswork, and guessing from GL.iNet's
+descriptions has been wrong three times in this project. Lease time, upstream DNS servers,
+firewall, VPN and VLANs are absent for that reason, not because they were forgotten.
+
+### Passphrases are omitted unless asked for
+
+A profile is a file people commit. `--get` writes no WiFi keys; `--get --with-keys` includes
+them in cleartext.
+
+An omitted key is not an empty key. On apply, a missing key is not written at all, leaving
+whatever the target already has -- so the private default is also the safe one. This depends on
+`wifi.set_config` leaving unmentioned fields alone, verified on hardware 2026-07-29.
+
+### Apply order
+
+Fixed, and each step is where it is because doing it later fails:
+
+1. **Domain.** Reservation writes are refused without one.
+2. **Network.** Reservations must be inside the subnet before they are written.
+3. **Reservations**, then **DNS names**.
+4. **Wireless**, opt-in via `--wireless`. It needs a wired session and is the section least
+   likely to be wanted, so a refusal there must not undo the addressing.
+
+### A subnet move ends the run
+
+When the profile's subnet differs from the router's, the router changes address during step 2 and
+nothing after it is reachable from that session. `goglcfg` stops, says the router has moved, and
+prints the command to resume at the new address.
+
+Reporting success for a run that applied a third of a profile would be a lie, and continuing
+would mean writing reservations over a connection that no longer exists. A pool-only difference
+is not a move and runs straight through.
+
+### Cross-model applies warn rather than fail
+
+Addresses and names are portable. Wireless is not: interface names, radio names, channel lists
+and hardware modes are per-device and per-regulatory-domain. A profile from another model warns,
+and any interface or radio the target lacks is reported and skipped rather than failing the load.
 
 ## Concurrency Requirements
 

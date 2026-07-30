@@ -1,7 +1,9 @@
 .PHONY: all build test lint clean coverage examples examples-clean examples-test utilities utilities-clean install api-docs help
 
-# All utilities. Mirrors gofi's UTILITIES := gofimac gofinet gofips one-for-one.
-UTILITIES := goglmac goglnet goglps
+# The first three mirror gofi's gofimac/gofinet/gofips, so that knowing one set means
+# knowing the other. goglcfg has no counterpart: reproducing a whole network spans all
+# three and belongs in none of them.
+UTILITIES := goglmac goglnet goglps goglcfg
 
 # All examples
 EXAMPLES := basic list reservations

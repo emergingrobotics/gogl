@@ -99,3 +99,6 @@ go.work.sum
 # Agent/process scratch (skill work artifacts)
 .llm/
 .superpowers/
+
+# Discovery captures hold live payloads: WiFi passphrases in cleartext, session ids.
+discovery/captures/
