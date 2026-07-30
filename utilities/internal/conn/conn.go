@@ -49,6 +49,9 @@ type Flags struct {
 	Password string
 	Username string
 
+	// Version reports whether --version was given.
+	Version bool
+
 	warnings []string
 }
 
@@ -62,6 +65,20 @@ func (f *Flags) Register(fs *flag.FlagSet) {
 	fs.BoolVar(&f.HTTPS, "https", false, "use HTTPS instead of HTTP")
 	fs.BoolVar(&f.Secure, "secure", false, "under --https, enforce TLS certificate verification")
 	fs.BoolVar(&f.Secure, "k", false, "under --https, enforce TLS certificate verification (shorthand)")
+	fs.BoolVar(&f.Version, "version", false, "print the build version and exit")
+}
+
+// ShowVersion prints the build identity if --version was given, and reports whether it
+// did. A caller returns immediately when it reports true.
+//
+// Returned rather than exiting, because a library that calls os.Exit takes a decision
+// that belongs to main.
+func (f *Flags) ShowVersion(program string) bool {
+	if !f.Version {
+		return false
+	}
+	PrintVersion(os.Stdout, program)
+	return true
 }
 
 // Parse parses args with fs, tolerating flags written after a positional

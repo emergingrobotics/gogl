@@ -1,6 +1,7 @@
 # gogl v2: one binary, two backends
 
-**Status:** specification, not yet implemented. Written 2026-07-30.
+**Status:** specification. Phase 2 complete, phase 1 partly complete. Written 2026-07-30.
+See [Phases](#phases) for exactly what has landed.
 
 Supersedes the four-utility layout for the CLI surface only. The library under `src/` keeps its
 shape; `src/services` interfaces and `src/types` are the seam this design leans on.
@@ -257,21 +258,48 @@ shell history, contradicting the reason `GL_PASSWORD` was never given a flag.
 
 ## Implementation strategy
 
-**The library does not change.** `src/services`, `src/transport`, `src/auth`, `src/mock` and the
-`run*` functions keep their signatures. Cobra's `RunE` calls `runSet`, `runSetNetwork`,
-`runSetWireless`, `runClear`, `runSetDomain`, `buildReport`, `formatText`, `Capture`, `Apply` as
-they stand. Only `main.go` and the flag wiring are replaced.
+**The library does not change.** `src/services`, `src/transport`, `src/auth` and `src/mock` keep
+their shapes.
 
-That keeps the 503 existing tests alive, and makes the diff a new `cmd/` tree plus deletions.
+**The four utilities became importable packages** rather than being merged into one. Merging four
+`package main`s would have meant renaming ~15 colliding identifiers -- `formatText`, `formatJSON`,
+`mockClient`, `isConnectionLost`, `stubNetwork`, `testLAN`, `lanFixture` and several `Test*` names
+-- which is the sweeping-rename shape that has already corrupted files in this project once.
+Separate packages keep every namespace intact and need no renames at all.
+
+| Was | Is | Exported entry points |
+|---|---|---|
+| `utilities/goglps` | `utilities/internal/reservations` | `Get`, `Set`, `Add`, `Del`, `Clear`, `SetDomain`, `ParseHosts`, `FormatHosts`, `Modes` |
+| `utilities/goglnet` | `utilities/internal/netcfg` | `Show`, `BuildReport`, `FormatText`, `FormatJSON`, `FormatWireless`, `SetNetwork`, `SetWireless`, `SetSSID`, `NetworkModes`, `WirelessModes` |
+| `utilities/goglmac` | `utilities/internal/clients` | `List`, `BuildEntries`, `FormatText`, `FormatJSON`, `FilterFor`, `LoadOUI`, `ParseOUI` |
+| `utilities/goglcfg` | `utilities/internal/profile` | `Capture`, `Apply`, `ReadProfile`, `Profile`, `CaptureOptions`, `ApplyModes` |
+
+Two compositions were extracted from the deleted `main.go` files rather than dissolved into the
+command layer, so their ordering stays covered by the package's own tests: `netcfg.Show` (report
+the LAN, then the radios, treating a wireless read failure as a warning) and `clients.List` (load
+the OUI database before touching the device, then read clients and optionally reservations).
+
+Two things were deleted rather than carried forward. `checkModes` and its test enforced "exactly
+one mode selected", which a subcommand tree makes structurally impossible to violate. And
+`reservations.Modes` lost its `Get`/`Set`/`Add`/`Del`/`Clear` booleans for the same reason.
+
+`netcfg.optionalBool`, `optionalInt` and `optionalString` remain and are still tested, but pflag's
+`Changed()` answers the set-versus-unset question natively, so they are expected to go when the
+command tree lands.
+
+This keeps 527 tests alive across the move.
 
 **The four binaries keep working until the last area is ported**, then go in one commit with a
 `make uninstall` for the stale copies in `~/bin`.
 
 ### Phases
 
-1. **`cmd/` tree over verified endpoints.** `lan`, `radio`, `wifi`, `clients`, `profile`,
-   `system info`, `config`. GL.iNet backend only. Delete the four binaries.
-2. **TOML, XDG paths, `password_command`, install to `~/.local/bin`.**
+1. **Command tree over verified endpoints.** `lan`, `radio`, `wifi`, `clients`, `profile`,
+   `system info`, `config`. GL.iNet backend only.
+   - **Done:** the four utilities extracted to importable packages, tests intact.
+   - **Remaining:** `utilities/gogl` -- the cobra tree wiring those packages.
+2. **Done:** TOML config with named routers and `password_command`, XDG paths,
+   install to `~/.local/bin`, `make uninstall`, `--version`, `make check-docs`.
 3. **Capture pass** with `discovery/shape` for `wan`, `access`, `system reboot` on the SFT1200,
    and the whole UCI surface on the OpenWrt One. See [`../TODO.md`](../TODO.md).
 4. **`backend/openwrt`** implementing the service interfaces over `/ubus`, plus moving the three

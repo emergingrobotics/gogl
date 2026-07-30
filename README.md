@@ -248,6 +248,17 @@ nslookup <name> <router-ip>
 | `GL_USERNAME` | no | Router admin username (default `root`) |
 | `XDG_DATA_HOME` | no | Base for `goglmac`'s OUI cache (default `~/.local/share`) |
 
+### Common flags
+
+Every tool takes these.
+
+| Flag | Short | What it does |
+|------|-------|--------------|
+| `--version` | | Print the build version, revision, and whether the tree was dirty |
+
+`--version` exists because a stale binary shadowing a fresh one is hard to spot and cost real
+debugging time twice. One command now answers which build is running.
+
 ### Connection flags
 
 Shared by all three tools.
@@ -438,16 +449,24 @@ too.
 | Flag | What it sets |
 |------|--------------|
 | `--set-ssid` | The network name, up to 32 characters |
-| `--set-key` | WPA passphrase, 8 to 63 characters |
+| `--set-key` | Prompt for a WPA passphrase, 8 to 63 characters. Takes **no value** |
+| `--set-key-command` | Read the passphrase from a command's first line |
 | `--set-encryption` | e.g. `psk2`, or `sae` for WPA3; validated against the radio's list |
 | `--set-hidden=true\|false` | Whether the SSID is advertised |
 | `--set-enabled=true\|false` | Whether the interface is up |
 
 ```bash
 goglnet --iface default_radio0 --set-ssid player-test
-goglnet --iface default_radio0 --set-key 'a better passphrase'
+goglnet --iface default_radio0 --set-key                      # prompts, no echo
+goglnet --iface default_radio0 --set-key-command 'pass show wifi/lab'
 goglnet --iface guest2g --set-enabled=true --set-hidden=false --set-ssid player-guest
 ```
+
+**`--set-key` takes no value.** A passphrase on the command line is visible to other users
+through `ps` and is recorded in your shell history — the same reason the router password has no
+flag. Pass `--set-key` alone to be prompted with echo off, or name a command with
+`--set-key-command`. Passing a value is an error that tells you to clear your history, rather
+than silently ignoring it.
 
 #### Writing radio tuning, with `--device`
 
@@ -493,7 +512,7 @@ off-LAN is allowed, since no radio here carries it. Tuning is gated too: retunin
 radio's clients just as thoroughly as renaming it.
 
 **They prompt.** Every wireless write shows the before and after and asks `y/N`. `--yes` skips
-it for scripts. Unlike `--del`, a non-terminal stdout does not imply consent: there the worst
+it for scripts. Unlike `goglps --del`, a non-terminal stdout does not imply consent: there the worst
 case is a lost reservation, here it is a device you have to walk to. DFS channels get an extra
 warning — the radio must vacate one if it detects radar, taking every client with it for the
 minutes it spends re-scanning. A poor choice for kit that has to come up reliably in an

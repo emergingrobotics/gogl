@@ -1,16 +1,29 @@
-.PHONY: all build test lint clean coverage examples examples-clean examples-test utilities utilities-clean install api-docs help
+.PHONY: all build test lint clean coverage examples examples-clean examples-test utilities utilities-clean install uninstall check-docs api-docs help
 
-# The first three mirror gofi's gofimac/gofinet/gofips, so that knowing one set means
-# knowing the other. goglcfg has no counterpart: reproducing a whole network spans all
-# three and belongs in none of them.
-UTILITIES := goglmac goglnet goglps goglcfg
+# The single `gogl` binary. The four earlier utilities became importable packages under
+# utilities/internal/ -- reservations, netcfg, clients, profile -- so their logic and
+# tests survive the move to one command tree. See docs/DESIGN-V2.md.
+#
+# Empty until utilities/gogl exists. `make build` still compiles and tests the whole
+# module, which is where all the logic now lives.
+UTILITIES :=
 
 # All examples
 EXAMPLES := basic list reservations
 
-# Install destination. Defaults to the user's ~/bin so no sudo is needed.
-# Override with: make install INSTALL_DIR=/somewhere/else
-INSTALL_DIR ?= $(HOME)/bin
+# Install destination. ~/.local/bin per the XDG user-directory convention: it is on
+# PATH by default via systemd and Debian's .profile, and nothing this tool does needs
+# root. Override with: make install INSTALL_DIR=/somewhere/else
+INSTALL_DIR ?= $(HOME)/.local/bin
+
+# Earlier releases installed to ~/bin. `make uninstall` clears both, because a stale
+# binary shadowing a fresh one cost real debugging time twice.
+LEGACY_INSTALL_DIR := $(HOME)/bin
+
+# Build stamp. Prefers a git tag, falls back to a short revision, then to nothing --
+# in which case the binary reports the toolchain's own VCS stamp.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null)
+LDFLAGS := -X github.com/emergingrobotics/gogl/utilities/internal/conn.Version=$(VERSION)
 
 .DEFAULT_GOAL := help
 
@@ -60,11 +73,17 @@ examples-test:
 
 utilities:
 	@mkdir -p bin
-	@for util in $(UTILITIES); do \
-		echo "Building $$util..."; \
-		go build -o bin/$$util ./utilities/$$util; \
-	done
-	@echo "All utilities built in bin/"
+	@if [ -z "$(UTILITIES)" ]; then \
+		echo "No utilities to build: the command tree is being rebuilt as a single"; \
+		echo "'gogl' binary. See docs/DESIGN-V2.md. The library and the four packages"; \
+		echo "under utilities/internal/ are built and tested by 'make test'."; \
+	else \
+		for util in $(UTILITIES); do \
+			echo "Building $$util..."; \
+			go build -ldflags "$(LDFLAGS)" -o bin/$$util ./utilities/$$util; \
+		done; \
+		echo "All utilities built in bin/"; \
+	fi
 
 utilities-clean:
 	rm -rf bin/
@@ -81,6 +100,28 @@ install: utilities
 # Regenerate docs/api/ from GL.iNet's API description. The description is fetched
 # to /tmp rather than vendored: it comes from a GPL-3.0 package and this project is
 # MIT.
+# Remove installed binaries from both the current and the legacy location. The legacy
+# sweep matters: a stale ~/bin/goglps shadowed a fresh build twice, and each time the
+# symptom was a flag that "did not exist".
+uninstall:
+	@for util in $(UTILITIES) gogl; do \
+		for dir in $(INSTALL_DIR) $(LEGACY_INSTALL_DIR); do \
+			if [ -e "$$dir/$$util" ]; then \
+				echo "Removing $$dir/$$util"; \
+				rm -f "$$dir/$$util"; \
+			fi; \
+		done; \
+	done
+	@echo "Uninstalled."
+
+# Check the documentation against the binaries rather than against memory.
+#
+# Two classes of drift this catches, both of which happened: a flag documented that does
+# not exist (or exists and is undocumented), and a Go snippet in README.md that no longer
+# compiles after a signature change.
+check-docs: utilities
+	@scripts/check-docs.sh
+
 api-docs:
 	./scripts/fetch-api-description.sh /tmp/gl-api-description.json
 	python3 scripts/generate-api-docs.py /tmp/gl-api-description.json
@@ -104,7 +145,9 @@ help:
 	@echo "Utility targets:"
 	@echo "  utilities       Build all utilities to bin/"
 	@echo "  utilities-clean Remove utility binaries"
-	@echo "  install         Build and install utilities to ~/bin (override INSTALL_DIR)"
+	@echo "  install         Build and install to ~/.local/bin (override INSTALL_DIR)"
+	@echo "  uninstall       Remove installed binaries, including from the legacy ~/bin"
 	@echo ""
 	@echo "Documentation targets:"
+	@echo "  check-docs      Verify README flags and links against the built binaries"
 	@echo "  api-docs        Regenerate docs/api/ from GL.iNet's API description"
