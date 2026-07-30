@@ -1,4 +1,4 @@
-.PHONY: all build test lint clean coverage examples examples-clean examples-test utilities utilities-clean install uninstall check-docs api-docs help
+.PHONY: all build test lint clean coverage examples examples-clean examples-test utilities utilities-clean install uninstall check-docs hil-test api-docs help
 
 # The single `gogl` binary. The four earlier utilities became importable packages under
 # utilities/internal/ -- reservations, netcfg, clients, profile -- so their logic and
@@ -120,6 +120,13 @@ uninstall:
 check-docs: utilities
 	@scripts/check-docs.sh
 
+# Hardware-in-the-loop test. Writes to a real router and restores what it found.
+#
+# Not part of `make test`, and never will be: `make test` runs against an in-process mock
+# with no hardware, and mixing the two would make a green suite mean two different things.
+hil-test: install
+	@scripts/hil-test.sh $(HIL_ARGS)
+
 api-docs:
 	./scripts/fetch-api-description.sh /tmp/gl-api-description.json
 	python3 scripts/generate-api-docs.py /tmp/gl-api-description.json
@@ -148,4 +155,5 @@ help:
 	@echo ""
 	@echo "Documentation targets:"
 	@echo "  check-docs      Verify README flags and links against the built binaries"
+	@echo "  hil-test        Run the hardware-in-the-loop test (writes to a real router)"
 	@echo "  api-docs        Regenerate docs/api/ from GL.iNet's API description"

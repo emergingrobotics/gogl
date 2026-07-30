@@ -37,12 +37,13 @@ type Client struct {
 
 	// OnlineTime is when the client came online, verbatim as the firmware reports it.
 	//
-	// A string because that is what the API description calls it, and the format is
-	// uncaptured: it may be a unix timestamp, or seconds elapsed, or a formatted date.
-	// GL.iNet is not consistent about this -- network.get_dhcp_leases calls its field
-	// "expires" and reports seconds remaining, not a timestamp -- so the value is kept
-	// unparsed and rendered by SinceOnline, which says what it does not know.
-	OnlineTime string `json:"online_time,omitempty"`
+	// FlexString because the API description calls this a string and firmware 4.3.28
+	// sends a number. The format is also undocumented: it may be a unix timestamp,
+	// seconds elapsed, or a formatted date. GL.iNet is not consistent about this --
+	// network.get_dhcp_leases calls its field "expires" and reports seconds remaining --
+	// so the value is kept unparsed and rendered by SinceOnline, which says what it does
+	// not know rather than guessing.
+	OnlineTime FlexString `json:"online_time,omitempty"`
 
 	// RXBytes and TXBytes are cumulative totals. The firmware also reports
 	// instantaneous rx/tx rates, which this type deliberately omits: a byte total
@@ -86,7 +87,7 @@ func (c *Client) Band() string {
 // The second return reports whether the value was understood, so a caller can choose to
 // show nothing rather than something meaningless.
 func (c *Client) SinceOnline(now time.Time) (string, bool) {
-	raw := strings.TrimSpace(c.OnlineTime)
+	raw := strings.TrimSpace(c.OnlineTime.String())
 	if raw == "" {
 		return "", false
 	}

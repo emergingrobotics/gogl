@@ -95,7 +95,7 @@ func mockRouter(t *testing.T, reservations []types.Reservation, hostFile string)
 	s.SetReservations(reservations)
 	s.SetHostFile(hostFile)
 	s.SetClients([]types.Client{
-		{Name: "self", MAC: "aa:bb:cc:dd:ee:ff", IP: "127.0.0.1", Iface: "cable"},
+		{Name: "self", MAC: "aa:bb:cc:dd:ee:ff", IP: "127.0.0.1", Iface: "cable", Online: true},
 	})
 	return s
 }
@@ -397,6 +397,68 @@ func TestProfileExportThenImport(t *testing.T) {
 	}
 	if got := target.Reservations(); len(got) != 2 {
 		t.Errorf("target holds %d reservations, want 2", len(got))
+	}
+}
+
+// The decode path, end to end, against a payload shaped as the device sends it rather
+// than one marshalled from gogl's own structs.
+//
+// This is the test whose absence let a real bug ship. mock.SetClients takes
+// []types.Client and marshals it, so the payload it serves is by construction whatever
+// gogl's types claim -- it served a string online_time while the device sent a number,
+// and every test passed.
+func TestClientsListDecodesTheCapturedPayload(t *testing.T) {
+	s := mockRouter(t, nil, withDomain())
+	s.LoadFixture(mock.ClientGroup, mock.MethodGetList, json.RawMessage(mock.FactoryClients))
+
+	out, err := run(t, s, "clients", "list", "--all")
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "oui") {
+			t.Skipf("no OUI data available: %v", err)
+		}
+		t.Fatalf("clients list --all: %v", err)
+	}
+
+	for _, want := range []string{"europa", "iPhone", "iPad", "192.168.2.138"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	// online_time arrives as a number; the SINCE column must render rather than blank.
+	if !strings.Contains(out, "SINCE") {
+		t.Errorf("no SINCE column:\n%s", out)
+	}
+}
+
+// The stale-entry case, end to end: an offline client from a previous subnet must be
+// hidden by default and appear with --all.
+func TestClientsListHidesOfflineByDefault(t *testing.T) {
+	s := mockRouter(t, nil, withDomain())
+	s.SetClients([]types.Client{
+		{Name: "self", MAC: "aa:bb:cc:dd:ee:ff", IP: "127.0.0.1", Iface: "cable", Online: true},
+		{Name: "iPad", MAC: "02:f0:6b:61:70:ff", IP: "192.168.2.138", Iface: "5G", Online: false},
+	})
+
+	out, err := run(t, s, "clients", "list")
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "oui") {
+			t.Skipf("no OUI data available: %v", err)
+		}
+		t.Fatalf("clients list: %v", err)
+	}
+	if strings.Contains(out, "192.168.2.138") {
+		t.Errorf("the offline station appeared without --all:\n%s", out)
+	}
+
+	all, err := run(t, s, "clients", "list", "--all")
+	if err != nil {
+		t.Fatalf("clients list --all: %v", err)
+	}
+	if !strings.Contains(all, "192.168.2.138") {
+		t.Errorf("--all did not include the offline station:\n%s", all)
+	}
+	if !strings.Contains(all, "ONLINE") {
+		t.Errorf("--all did not add the ONLINE column:\n%s", all)
 	}
 }
 

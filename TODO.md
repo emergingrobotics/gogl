@@ -68,7 +68,36 @@ half-understood call to it locks you out of your own router.
 
 ---
 
-## 3. `system reboot` — uncaptured
+## 3. `clients` — three fields worth capturing
+
+`clients.get_list` returns more than gogl reads, and three of them matter:
+
+```bash
+probe clients get_list      # then look for online_time, remote, type
+probe clients get_status    # cable_total and wireless_total: a cross-check on `online`
+```
+
+**`online_time`** — gogl now models it and renders it as a SINCE column, but its format is
+undocumented. `types.Client.SinceOnline` recognises a unix timestamp and an elapsed-seconds
+count and passes anything else through untouched. Capture tells us which it is, and what it
+holds for a client with `online: false`.
+
+**`remote`** — described as "if true, indicates that the current client is connecting to the
+router". If that means *the client making this API call*, it would replace the
+wireless-session guard's current mechanism, which routes a UDP socket to discover its own
+local address and matches it against the client list. Authoritative beats indirect.
+
+**`type`** — a number, 0-6, covering 2.4G, 5G, lan, both guest bands, unknown and Dongle.
+gogl derives band from the `iface` string instead. `type` distinguishes guest from main,
+which `iface` does not.
+
+Also **`clients.remove_offline`** ("Delete offline clients") would clear stale entries like
+the 192.168.2.138 station still listed after the renumber. It is a write, so it needs the
+shape confirmed first. Do not run it blind.
+
+---
+
+## 4. `system reboot` — uncaptured
 
 `gogl system reboot` is in the tree with nothing behind it. The `reboot` group has 2 methods.
 
@@ -80,7 +109,7 @@ Only exercise it when you are physically near the device.
 
 ---
 
-## 4. Optional: does a radio write work?
+## 5. Optional: does a radio write work?
 
 The last unverified assumption in the wireless surface. `wifi.set_config`'s interface-scoped
 fields are confirmed — writing only `ssid` left the passphrase and encryption intact — but the
@@ -91,18 +120,15 @@ on the assumption they are valid.
 Over ethernet, and expect the radio's clients to drop:
 
 ```bash
-goglnet                                          # note the current channel and width
-goglnet --device radio1 --set-channel 149 --dry-run
-goglnet --device radio1 --set-channel 149
-goglnet                                          # did it take?
-goglnet --device radio1 --set-htmode 40          # tests the narrower-width inference
+gogl radio list                                  # note the current channel and width
+gogl radio set --band 5 --channel 149 --dry-run
+gogl radio set --band 5 --channel 149
+gogl radio list                                  # did it take?
+gogl radio set --band 5 --width 40               # tests the narrower-width inference
 ```
 
-If `--set-htmode 40` is rejected, that inference is wrong and `HTModes.Options` should offer only
-the reported maximum.
-
-**These commands need the old binaries.** `make build` currently produces none — the command tree
-is mid-rebuild — but your installed copies in `~/.local/bin` still work.
+If `--width 40` is rejected, that inference is wrong and `HTModes.Options` should offer only the
+reported maximum.
 
 ---
 
@@ -110,7 +136,8 @@ is mid-rebuild — but your installed copies in `~/.local/bin` still work.
 
 1. `sft1200-wan.txt` — becomes the `wan` types and command surface
 2. `sft1200-acl.txt` — becomes `access`
-3. Whether a radio write works, and whether `--set-htmode 40` is accepted
+3. A `clients get_list` capture showing `online_time`, `remote` and `type`
+4. Whether a radio write works, and whether `--set-htmode 40` is accepted
 
 With 1 and 2 I can write those areas from evidence rather than from a vendor description that has
 been wrong three times: `dhcp.*` does not exist, `dns.set_host` rejects `(`, `)` and `=`, and
@@ -120,13 +147,13 @@ been wrong three times: `dhcp.*` does not exist, `dns.set_host` rejects `(`, `)`
 
 ## Meanwhile, needing no hardware
 
-**The command tree.** `utilities/gogl` — the cobra tree over `reservations`, `netcfg`, `clients`
-and `profile`, which are already extracted, exported and tested. This is the next thing to build,
-and it restores a working CLI.
+**The documentation.** `make check-docs` fails: README has no `### gogl` section and still
+documents the four removed binaries across 109 references, and VISION carries three full tool
+specifications for a CLI that no longer exists. That is the largest outstanding job and it needs
+no device.
 
-Smaller and independent:
+Smaller:
 
-- `netcfg`'s `optionalBool`/`optionalInt`/`optionalString` become dead once pflag's `Changed()`
-  handles set-versus-unset. Delete them and their tests along with the tree.
-- Wire `--version`, `--output` and `--router` as persistent flags on the root command, replacing
-  the per-tool copies.
+- `gogl clients prune`, wrapping `clients.remove_offline`, once section 3 confirms its shape.
+- `remote` replacing the wireless-session guard's UDP-routing trick, same condition.
+- `gogl access` and `gogl wan`, from sections 1 and 2.

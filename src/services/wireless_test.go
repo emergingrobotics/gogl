@@ -30,7 +30,7 @@ func wirelessFor(t *testing.T, iface string) (*mock.Server, services.WirelessSer
 		return "192.168.8.50", nil
 	})
 	s.SetClients([]types.Client{
-		{Name: "laptop", MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.8.50", Iface: iface},
+		{Name: "laptop", MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.8.50", Iface: iface, Online: true},
 	})
 	return s, svc
 }

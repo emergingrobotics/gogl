@@ -46,7 +46,7 @@ func profileClient(t *testing.T, reservations []types.Reservation, hostFile stri
 	s.SetReservations(reservations)
 	s.SetHostFile(hostFile)
 	s.SetClients([]types.Client{
-		{Name: "self", MAC: "aa:bb:cc:dd:ee:ff", IP: "127.0.0.1", Iface: "cable"},
+		{Name: "self", MAC: "aa:bb:cc:dd:ee:ff", IP: "127.0.0.1", Iface: "cable", Online: true},
 	})
 
 	u, err := url.Parse(s.URL())

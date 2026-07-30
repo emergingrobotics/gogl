@@ -52,7 +52,7 @@ func wirelessClient(t *testing.T, iface string) (*mock.Server, *gogl.Client) {
 	// The mock listens on loopback, so the address gogl will report for itself is
 	// 127.0.0.1. Claim that address for a client on the requested interface.
 	s.SetClients([]types.Client{
-		{Name: "self", MAC: "aa:bb:cc:dd:ee:01", IP: "127.0.0.1", Iface: iface},
+		{Name: "self", MAC: "aa:bb:cc:dd:ee:01", IP: "127.0.0.1", Iface: iface, Online: true},
 	})
 	return s, c
 }

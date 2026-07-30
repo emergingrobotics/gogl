@@ -58,8 +58,8 @@ func ValidateContent(content string) error {
 
 // HostEntry is one line of the managed block: an address and the names it answers.
 type HostEntry struct {
-	IP    string
-	Names []string
+	IP    string   `json:"ip"`
+	Names []string `json:"names"`
 }
 
 // HostFile is a parsed host file, split into the parts gogl owns and the parts it

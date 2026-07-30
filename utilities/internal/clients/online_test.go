@@ -2,6 +2,7 @@ package clients
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -65,13 +66,17 @@ func TestAndComposesFilters(t *testing.T) {
 func TestSinceOnlineReadings(t *testing.T) {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 
+	// Computed rather than hardcoded: the first draft of this test used a magic constant
+	// that was 240 hours out, and the failure looked like a bug in the code.
+	anHourAgo := strconv.FormatInt(now.Add(-time.Hour).Unix(), 10)
+
 	tests := []struct {
 		name  string
 		value string
 		want  string
 		ok    bool
 	}{
-		{"unix timestamp an hour ago", "1784548800", "1h0m0s", true},
+		{"unix timestamp an hour ago", anHourAgo, "1h0m0s", true},
 		{"elapsed seconds", "3600", "1h0m0s", true},
 		{"a formatted date passes through", "2026-07-30 11:00:00", "2026-07-30 11:00:00", true},
 		{"empty is unknown", "", "", false},
@@ -81,7 +86,7 @@ func TestSinceOnlineReadings(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := types.Client{OnlineTime: tt.value}
+			c := types.Client{OnlineTime: types.FlexString(tt.value)}
 			got, ok := c.SinceOnline(now)
 			if ok != tt.ok {
 				t.Fatalf("ok = %t, want %t (got %q)", ok, tt.ok, got)
@@ -98,7 +103,7 @@ func TestSinceOnlineReadings(t *testing.T) {
 // time.Unix and would have printed 1970 dates.
 func TestSinceOnlineDoesNotInventPrecision(t *testing.T) {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
-	c := types.Client{OnlineTime: "not a time at all"}
+	c := types.Client{OnlineTime: types.FlexString("not a time at all")}
 
 	got, ok := c.SinceOnline(now)
 	if !ok {
