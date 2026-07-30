@@ -19,66 +19,26 @@ cd "$(dirname "$0")/.."
 fail=0
 note() { printf '%s\n' "$*" >&2; fail=1; }
 
-# --- 1. Every flag in --help is documented, and every documented flag exists. -------
+# --- 1. README is narrative, not a flag reference. ----------------------------------
 #
-# Connection flags are documented once in Configuration rather than per tool, so they
-# are exempt from the per-section check.
-# Flags every tool shares, documented once under "Common flags" and "Connection flags"
-# rather than repeated in each tool's section.
-shared="host port https secure router output version json"
-
-if ! compgen -G 'bin/*' >/dev/null; then
-    echo "check-docs: no binaries in bin/; skipping the flag check." >&2
+# This used to check README section by section against each binary's --help. That made sense
+# when README *was* the reference; docs/gogl-guide.md is now, and README delegates to it.
+# Checking README for exhaustive flag coverage would only pressure it back into duplicating
+# the guide, which is how the two drift apart.
+#
+# README is still checked for broken links and anchors below, and the guide is checked for
+# flag coverage next.
+if ! grep -q 'docs/gogl-guide.md' README.md; then
+    note "check-docs: README.md does not link to docs/gogl-guide.md"
 fi
-
-for tool in bin/*; do
-    name=$(basename "$tool")
-    [ -x "$tool" ] || continue
-    [ -f "$tool" ] || continue
-
-    section=$(awk -v t="### \`$name\`" '
-        index($0, t) == 1 { inside = 1; next }
-        inside && /^---$/  { exit }
-        inside             { print }
-    ' README.md)
-
-    if [ -z "$section" ]; then
-        note "check-docs: README.md has no '### \`$name\`' section"
-        continue
-    fi
-
-    # Strip only the leading whitespace and dashes. Stripping every dash turns
-    # --dry-run into dryrun and compares nothing useful.
-    real=$("$tool" --help 2>&1 \
-        | grep -oE '^[[:space:]]+-{1,2}[a-z][a-z-]*' \
-        | sed -E 's/^[[:space:]]+-{1,2}//' | sort -u)
-
-    # Prose contains wildcards like --set-* and cross-references to other tools'
-    # flags. A trailing hyphen marks the former; drop those rather than reporting a
-    # flag named "set-".
-    documented=$(printf '%s' "$section" | grep -oE '`--[a-z][a-z-]*' \
-        | sed 's/`--//' | grep -vE -- '-$' | sort -u)
-
-    for flag in $real; do
-        case " $shared " in *" $flag "*) continue ;; esac
-        [ ${#flag} -lt 2 ] && continue
-        if [[ $'\n'"$documented"$'\n' != *$'\n'"$flag"$'\n'* ]]; then
-            note "check-docs: $name --$flag exists but is not documented"
-        fi
-    done
-
-    for flag in $documented; do
-        case " $shared " in *" $flag "*) continue ;; esac
-        if [[ $'\n'"$real"$'\n' != *$'\n'"$flag"$'\n'* ]]; then
-            note "check-docs: $name --$flag is documented but does not exist"
-        fi
-    done
-done
 
 # --- 1b. The guide documents every flag the binary has. ----------------------------
 #
 # Checked separately from README because the guide is the complete reference: a flag missing
 # there is a documentation bug, whereas README is allowed to be selective.
+# Flags documented once under the guide's global-flags table rather than per command.
+shared="host port https secure router output version json"
+
 if [ -x bin/gogl ] && [ -f docs/gogl-guide.md ]; then
     guide=$(cat docs/gogl-guide.md)
     for leaf in "lan show" "lan set" "lan leases" \

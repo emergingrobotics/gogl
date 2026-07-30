@@ -1,9 +1,11 @@
 <img src="images/gl-gopher-antennas-transparent.png" width="33%" alt="gogl logo">
 
-# gogl - Go GL.iNet Travel Router Client
+# gogl - Go GL.iNet Travel Router Management Tool
 
 Programmatic control of GL.iNet travel routers running firmware 4.x, targeting the
 **GL-SFT1200 (Opal)**.
+
+This is a single monolithic configuration tool AND the go module that enables the functionality.
 
 Disclaimer: This works for me — that's the entire guarantee. Built with AI in the loop, so check your own biases before you love it or hate it on principle. Use at your own risk, fork freely, and don't @ me when it explodes. (But do drop me a note if it helps — pay it forward.)
 
@@ -12,10 +14,6 @@ Disclaimer: This works for me — that's the entire guarantee. Built with AI in 
 > the live device; every endpoint gogl uses is confirmed, and the full API is
 > documented in [`docs/api/`](docs/api/README.md).
 >
-> One design assumption was wrong and has been corrected: a DHCP reservation does
-> **not** create a DNS record. Names work, but through the router's host file
-> instead — see [Addresses and names are separate](#addresses-and-names-are-separate).
-
 ---
 
 ## The problem
@@ -110,709 +108,268 @@ than a feature. `--del` and `--clear` remove both.
 > **Full command reference:** [`docs/gogl-guide.md`](docs/gogl-guide.md) documents every
 > area, subcommand and flag, with recipes and troubleshooting.
 
-# Part 1: Command-line programs
+# Part 1: The `gogl` command
 
-Four tools. The first three mirror `gofi`'s one-for-one, so that knowing one set means
-knowing the other. `goglcfg` has no counterpart: reproducing a whole network spans all
-three and belongs in none of them.
+One binary. `gogl <area> <action>`, the shape git, docker and kubectl converged on.
 
-| gogl | gofi counterpart | What it does | Writes? |
-|------|------------------|--------------|---------|
-| `goglps` | `gofips` | DHCP reservations, in ISC DHCP format | **yes** |
-| `goglnet` | `gofinet` | LAN address, DHCP pool, resolvers, wireless | **yes**, with `--set-*` |
-| `goglmac` | `gofimac` | Connected clients with IEEE OUI manufacturer lookup | no |
-| `goglcfg` | — | A whole network as a JSON profile: capture and apply | **yes**, on `--set` |
+**[`docs/gogl-guide.md`](docs/gogl-guide.md) is the complete reference** — every area,
+every subcommand, every flag, with recipes and troubleshooting. This section is the tour.
 
-**What gogl writes:** reservations, host-file entries and the DNS domain (`goglps`); the LAN
-address and DHCP pool, wireless identity and radio tuning (`goglnet --set-*`). **What it does
-not:** VLANs, firewall, VPN. Set those in the GL.iNet admin panel.
+## What gogl manages
 
-Three rules protect you from the states that are painful to recover from:
+Nine areas. Eight act on the router; `config` acts on your machine.
 
-- **A reservation write needs a domain first.** Otherwise you get addresses with no names and
-  no hint that was accidental.
-- **Moving the LAN subnet is refused while reservations exist**, unless `--force`. The firmware
-  silently rewrites every reservation into the new subnet, keeping host parts — usually what you
-  want, but unannounced. Changing only the DHCP pool is never guarded, since nothing moves.
-- **An SSID change is refused over a WiFi session.** It would drop the session with no address
-  to reconnect at. Connect over ethernet. See [`goglnet`](#goglnet--network-and-wireless).
+| Area | Reads | Writes |
+|---|---|---|
+| `lan` | address, netmask, DHCP pool, lease time, resolvers, dynamic leases | address, netmask, pool |
+| `lan reservations` | static MAC-to-IP bindings, in ISC DHCP format | add, remove, import, export, clear |
+| `lan dns` | the DNS domain and every managed name | domain, names, clear |
+| `radio` | per-radio channel, width, hardware mode, power, and what each radio accepts | all four |
+| `wifi` | per-interface SSID, encryption, hidden and enabled state | SSID, passphrase, encryption, hidden, enabled |
+| `clients` | connected stations with IEEE OUI vendor lookup, online state, session age | nothing |
+| `profile` | a whole network as JSON | applies one back, to this router or another |
+| `system` | model, firmware, endpoint | nothing |
+| `config` | gogl's own settings and named routers | writes a starter file |
+
+That is a considerably wider surface than the four utilities it replaces, which covered
+reservations, a network report, and a client list. What grew:
+
+**Wireless, in two halves.** `radio` and `wifi` are not an arbitrary split — they mirror how
+the firmware scopes writes. `wifi.set_config` takes `device` for channel, width, hardware
+mode and power, and `iface_name` for SSID, passphrase, encryption, hidden and enabled. The
+areas follow the seam, so the abstraction never fights the transport.
+
+**Band abstraction.** `--band 2.4|5|6` resolves to a device by reading the band each radio
+*reports*, never a static `radio0`/`radio1` map. Nothing guarantees that ordering across
+models, and a three-radio device would break a fixed map silently.
+
+**Whole-network profiles.** `gogl profile export` captures the LAN, pool, reservations, DNS
+names, domain, wireless identity and radio tuning into one JSON file; `import` applies it
+back. Not a router image — it deliberately omits the unit's own MAC, serial and uptime,
+which is what makes the file usable on a *second* router.
+
+**Client state.** `clients list` reports online state, session age and vendor, and hides
+stations the router merely remembers by default. That default exists because the list
+carries history: a router renumbered from `192.168.2.0/24` to `192.168.8.0/24` was still
+reporting a station at `192.168.2.138`.
+
+**Named routers and a config file.** `--router lab` selects a TOML block. Passwords are
+never in the file: environment, then a command the file names, then a prompt.
+
+**Machine-readable output.** `--output json` on every read.
+
+Deliberately absent, and why: lease time and upstream DNS servers are readable but have no
+verified write endpoint; WAN, VLANs, firewall and VPN have no endpoint this project has
+exercised against hardware. Building them from GL.iNet's API description alone has been
+wrong four times — see [Limitations](#limitations).
 
 ## Prerequisites
 
 - A GL.iNet router on **firmware 4.x**. GL.iNet replaced its REST API with JSON-RPC at
   firmware 4.0, and `gogl` speaks only JSON-RPC. Firmware 3.x will not work.
-- The admin password you set during the router's first-run setup. There is no default.
+- The admin password from the router's first-run setup. There is no default.
 - Go 1.22 or later, to build.
 - Network reachability to the router's LAN address.
 
 Verified against a GL-SFT1200 (Opal) reporting firmware **4.3.28**. Other GL.iNet 4.x models
-share the API, but note that this one is a reduced build: six endpoints GL.iNet documents are
-absent on it. See [`docs/api/`](docs/api/README.md), where each method is marked.
+share the API, but this one is a reduced build: six endpoints GL.iNet documents are absent.
+See [`docs/api/`](docs/api/README.md), where each method is marked verified, absent or
+untested.
 
 ## Quick start
 
 ```bash
 git clone https://github.com/emergingrobotics/gogl
 cd gogl
-make build          # builds to bin/
-make install        # or install to ~/bin
+make build            # builds bin/gogl
+make install          # installs to ~/.local/bin
 ```
 
-Set your credentials. The password comes from the environment rather than a flag, so it
-never lands in a process listing:
+Set a password, then look at the router:
 
 ```bash
-export GL_ROUTER_IP=192.168.8.1
-read -rsp 'router password: ' GL_PASSWORD; export GL_PASSWORD; echo
+read -rsp 'router password: ' GL_PASSWORD; export GL_PASSWORD
+gogl -H 192.168.8.1 lan show
 ```
 
-`read -rsp` keeps it out of your shell history too. If you would rather export it directly,
-use single quotes so a `$` or backtick in the password is not mangled:
+Save yourself the `-H` and the export:
 
 ```bash
-export GL_PASSWORD='your-router-admin-password'
+gogl config init          # writes ~/.config/gogl/config.toml
+$EDITOR ~/.config/gogl/config.toml
+gogl config show
 ```
 
-See what you are working with:
+```toml
+default = "home"
+
+[routers.home]
+host             = "192.168.8.1"
+password_command = "pass show routers/home"
+```
+
+Then `gogl lan show`, `gogl clients list`, `gogl radio list`.
+
+Shell completion is free:
 
 ```bash
-goglnet
+gogl completion bash > /etc/bash_completion.d/gogl
 ```
 
-```
-MODEL       gl-sft1200
-FIRMWARE    4.3.28
-LAN         192.168.8.0/24  (255.255.255.0)
-DHCP        enabled
-POOL        192.168.8.100 - 192.168.8.249  (150 addresses)
-LEASE       12h
-DOMAIN      lan
-DNS         192.168.8.1
-RESERVED    0
-AVAILABLE   103
-```
+## Configuration and secrets
 
-`AVAILABLE` counts addresses that are neither in the DHCP pool, nor reserved, nor the router
-itself — the ones safe to hand out statically.
+`${XDG_CONFIG_HOME:-~/.config}/gogl/config.toml` holds everything except secrets. Named
+routers, a default, an output format, and optionally a command that prints each router's
+password.
 
-Find the MAC address of something you want to pin:
+**There is no `--password` flag and never will be.** A secret on the command line is visible
+to every user through `ps` and lands in your shell history. Resolution order: `GL_PASSWORD`,
+then `password_command`, then a prompt with echo off.
 
-```bash
-goglmac
-```
+WiFi passphrases follow the same rule: `gogl wifi set --passphrase` takes no value and
+prompts; `--passphrase-command` reads it from a command for scripts. Passing a value is an
+error rather than silently ignored.
 
-```
-aa:bb:cc:dd:ee:01	192.168.8.101	nas	    Synology Incorporated
-aa:bb:cc:dd:ee:02	192.168.8.102	laptop	Dell Inc.
-02:1a:2b:3c:4d:5e	192.168.8.103	unknown	randomized
-```
+Full detail: [Configuration file](docs/gogl-guide.md#configuration-file) and
+[Passwords and secrets](docs/gogl-guide.md#passwords-and-secrets).
 
-The manufacturer comes from `goglmac`'s own copy of the IEEE OUI database, never from
-whatever the router reports — on an OpenWrt 18.06 base, the router's table is likely years
-stale. A locally-administered address shows `randomized` rather than `unknown`, because it
-will never be in the IEEE database and is a poor thing to pin an address to.
+## Three guards
 
-Pin it:
+Each refuses a well-formed request because the state is wrong, and each exits **3** so a
+script can tell "I was blocked" from "it broke".
 
-```bash
-goglps --add 'host nas {
-    hardware ethernet aa:bb:cc:dd:ee:01;
-    fixed-address 192.168.8.13;
-}'
-```
+**A reservation write needs a domain first.** Otherwise you get addresses with no names and
+nothing signalling that was accidental.
 
-```
-Created: nas aa:bb:cc:dd:ee:01 192.168.8.13
-```
+**Moving the LAN subnet is refused while reservations exist**, unless `--force`. The firmware
+silently rewrites every reservation into the new subnet — usually what you want, entirely
+unannounced. Changing only the pool is never guarded, since nothing moves.
 
-The router now always hands `192.168.8.13` to that MAC. Confirm with:
+**Wireless writes are refused over a wireless session.** Applying one would drop the session
+with no address to reconnect at. `--yes` waives the prompt, never this guard.
 
-```bash
-goglps --get
-```
-
-It does **not** create a DNS record for `nas`. If that device announces `nas` as its own
-DHCP hostname, the router will resolve `nas.lan` from the resulting lease — but that is the
-client's doing, not the reservation's. Check what the router actually knows:
-
-```bash
-goglnet          # the resolvers the router advertises
-nslookup <name> <router-ip>
-```
-
-## Configuration
-
-### Environment variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `GL_PASSWORD` | yes | Router admin password. Note the full spelling: `GL_PASSWD` is a common slip, and the tools will name it if you set that instead. |
-| `GL_ROUTER_IP` | no | Router address, used when `-H` is absent |
-| `GL_USERNAME` | no | Router admin username (default `root`) |
-| `XDG_DATA_HOME` | no | Base for `goglmac`'s OUI cache (default `~/.local/share`) |
-
-### Common flags
-
-Every tool takes these.
-
-| Flag | Short | What it does |
-|------|-------|--------------|
-| `--version` | | Print the build version, revision, and whether the tree was dirty |
-
-`--version` exists because a stale binary shadowing a fresh one is hard to spot and cost real
-debugging time twice. One command now answers which build is running.
-
-### Connection flags
-
-Shared by all three tools.
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--host` | `-H` | `$GL_ROUTER_IP` | Router address |
-| `--port` | `-p` | `80` | Router port |
-| `--https` | | `false` | Use HTTPS instead of HTTP |
-| `--secure` | `-k` | `false` | Under `--https`, enforce TLS certificate verification |
-
-Note the port default is **80**, not 443. GL.iNet firmware serves its admin interface over
-plain HTTP; that is a difference from the UDM Pro, so a habit carried over from `gofi` will
-fail here. Passing `-k` without `--https` is an error rather than a silent no-op — there is
-no certificate to verify over HTTP.
-
-There is no `--site` flag. GL.iNet routers have no equivalent of a UniFi site.
-
-## Usage
-
-Three utilities. Every one takes the same connection flags and reads the same environment
-variables; see [Configuration](#configuration).
-
-| Tool | Reads | Writes |
-|------|-------|--------|
-| [`goglps`](#goglps--reservations-and-dns-names) | reservations, DNS names, the domain | all three |
-| [`goglnet`](#goglnet--network-and-wireless) | LAN, DHCP pool, leases, wireless | LAN address and pool, wireless identity and tuning |
-| [`goglmac`](#goglmac--connected-clients) | connected clients, OUI vendors | nothing |
-| [`goglcfg`](#goglcfg--whole-network-profiles) | everything the other three do | everything the other three do |
-
-Every write takes `--dry-run`, and a dry run performs every check the real write performs —
-including the refusals. A preview that approves what the write would reject is worse than no
-preview.
-
----
-
-### `goglps` — reservations and DNS names
-
-Manages static DHCP bindings and the DNS names that go with them, in ISC DHCP host-declaration
-format. One declaration becomes two writes, because the firmware stores the address and the name
-in separate tables; `goglps` keeps them in step. See
-[Addresses and names are separate](#addresses-and-names-are-separate).
-
-Exactly one mode flag per invocation.
-
-| Mode | Short | What it does |
-|------|-------|--------------|
-| `--get` | `-g` | Export every reservation to stdout in ISC DHCP format |
-| `--set [file]` | `-s` | Import declarations from a file, or stdin if omitted |
-| `--add '<fragment>'` | `-a` | Add one host from a declaration fragment, or stdin |
-| `--del` | `-d` | Delete one host, identified by `--name`, `--mac` or `--ip` |
-| `--domain <domain>` | | Set the DNS domain. Required before any reservation write |
-| `--clear` | | Delete **every** reservation and DNS name |
-
-| Modifier | Short | Applies to | What it does |
-|----------|-------|-----------|--------------|
-| `--dry-run` | | all writes | Show what would change, change nothing |
-| `--prune` | `-P` | `--set` | Also delete reservations and names on the router but absent from the file |
-| `--force` | `-f` | `--add`, `--del`, `--clear` | Proceed past conflicts; skip the confirmation prompt |
-| `--name` | `-n` | `--del` | Identify the target by hostname |
-| `--mac` | `-m` | `--del` | Identify the target by MAC |
-| `--ip` | `-i` | `--del` | Identify the target by address |
-
-```bash
-goglps --domain herlein.me                 # once per router, before any write
-goglps --get > player-test.hosts           # export
-goglps --set player-test.hosts --dry-run   # preview an import
-goglps --set player-test.hosts             # apply
-goglps --set player-test.hosts --prune     # apply, and delete what the file omits
-
-goglps --add 'host nas { hardware ethernet aa:bb:cc:dd:ee:01; fixed-address 192.168.8.13; }'
-goglps --del --name nas
-goglps --clear                             # everything, prompts unless --force
-```
-
-`--set` is idempotent: run it twice and the second run reports everything skipped and leaves the
-host file byte-identical. That is what makes a host file usable as a checked-in description of a
-network.
-
-Two refusals you will meet:
-
-- **`--set`, `--add`: domain not configured.** Run `--domain` first. A reservation with no name
-  is an address nothing can find, and nothing in the router's UI marks it as incomplete.
-- **Any address outside the LAN subnet.** Either renumber the router with `goglnet --set-ip`, or
-  renumber the file. See [Match the subnet](#match-the-subnet).
-
----
-
-### `goglnet` — network and wireless
-
-With no flags, reports the LAN, the DHCP pool, the reservation count, and every wireless radio
-with what it supports. With any `--set-*` flag, writes.
-
-#### Reporting
-
-| Flag | Short | What it does |
-|------|-------|--------------|
-| *(none)* | | Report the LAN, pool, reservation counts, and every radio |
-| `--json` | `-j` | JSON instead of text |
-| `--show-key` | | Print WiFi passphrases instead of masking them |
-
-```bash
-goglnet
-goglnet -j
-goglnet --show-key
-```
-
-If any reservation sits inside the DHCP pool, the report says so and lists them:
-
-```
-RESERVED     27
-  IN POOL    20  (honored by dnsmasq, excluded from the pool)
-AVAILABLE    96
-
-20 reservation(s) fall inside the DHCP pool 192.168.8.100-192.168.8.249:
-  192.168.8.208   3c:6a:d2:85:1c:d5   ganymede
-  ...
-```
-
-Nothing is broken — dnsmasq honors a static bind inside the dynamic range and excludes that
-address from allocation. But it is reported because it arises silently: a LAN renumber moved 20
-of 27 reservations into the pool on a real device, since the firmware rewrites host parts without
-considering where the pool is. It is also the explanation for an `AVAILABLE` count that otherwise
-looks wrong, those addresses being neither dynamically assignable nor counted as free.
-
-The wireless part reports each radio's selectable values, because the tuning flags are unusable
-without them — they differ per radio and per regulatory domain:
-
-```
-5G radio radio1: channel 44, 20, 11a/n/ac, power Max
-  channels:    36, 40, 44, 48, 149, 153, 157, 161, 165, or 0 for auto
-  bandwidths:  20, 40, 80
-  hw modes:    11ac, 11n/ac, 11a/n/ac
-  encryptions: none, psk2, psk-mixed, sae, sae-mixed
-  power:       Max, High, Medium, Low
-```
-
-Bandwidths are widths in MHz — `20`, `40`, `80`, and `auto` where the radio offers it — not the
-`HT20`/`VHT80` form GL.iNet's own API description implies. Hardware modes are slash-joined
-combinations (`11a/n/ac`), not bare `11ac`. `sae` is WPA3. These are what the device reports;
-an earlier version of this README printed the description's values, which are wrong.
-
-#### Changing just the DHCP pool
-
-```bash
-goglnet --set-start 192.168.8.50 --set-end 192.168.8.150 --dry-run
-goglnet --set-start 192.168.8.50 --set-end 192.168.8.150
-```
-
-The address and netmask are read from the device, so you do not restate them. Nothing moves:
-the router keeps its address, **the session survives**, and no reservation is touched. This is
-never refused, even with reservations present.
-
-#### Moving the LAN address
-
-All four flags together here, because a pool from the old subnet cannot be valid in a new one
-and guessing a replacement would be worse than asking.
-
-| Flag | What it sets |
-|------|--------------|
-| `--set-ip` | LAN address, e.g. `192.168.8.1` |
-| `--set-mask` | Netmask |
-| `--set-start` | DHCP pool start |
-| `--set-end` | DHCP pool end |
-| `--set-interface` | `lan` (default) or `guest` |
-| `--force` | Proceed despite existing reservations |
-| `--dry-run` | Show the change and any refusal, without writing |
-
-```bash
-goglnet --set-ip 192.168.8.1 --set-mask 255.255.255.0 \
-        --set-start 192.168.8.100 --set-end 192.168.8.249 --dry-run
-```
-
-**The router moves mid-call, so the session drops.** That is success, not failure; gogl says so
-and tells you the address to reconnect at.
-
-**Refused while reservations exist, unless `--force`.** The firmware silently rewrites every
-reservation into the new subnet, preserving host parts — `192.168.2.10` becomes `192.168.8.10`.
-That is usually what you want, which is why `--force` exists. It is refused by default because
-the rewrite is unannounced, and because it is only known to work for a same-size subnet: a
-netmask change, or a move that lands addresses inside the new pool, is untested.
-
-A netmask change counts as moving the subnet even when the address stays put, so it is guarded
-too.
-
-#### Writing wireless identity, with `--iface`
-
-| Flag | What it sets |
-|------|--------------|
-| `--set-ssid` | The network name, up to 32 characters |
-| `--set-key` | Prompt for a WPA passphrase, 8 to 63 characters. Takes **no value** |
-| `--set-key-command` | Read the passphrase from a command's first line |
-| `--set-encryption` | e.g. `psk2`, or `sae` for WPA3; validated against the radio's list |
-| `--set-hidden=true\|false` | Whether the SSID is advertised |
-| `--set-enabled=true\|false` | Whether the interface is up |
-
-```bash
-goglnet --iface default_radio0 --set-ssid player-test
-goglnet --iface default_radio0 --set-key                      # prompts, no echo
-goglnet --iface default_radio0 --set-key-command 'pass show wifi/lab'
-goglnet --iface guest2g --set-enabled=true --set-hidden=false --set-ssid player-guest
-```
-
-**`--set-key` takes no value.** A passphrase on the command line is visible to other users
-through `ps` and is recorded in your shell history — the same reason the router password has no
-flag. Pass `--set-key` alone to be prompted with echo off, or name a command with
-`--set-key-command`. Passing a value is an error that tells you to clear your history, rather
-than silently ignoring it.
-
-#### Writing radio tuning, with `--device`
-
-| Flag | What it sets |
-|------|--------------|
-| `--set-channel` | Channel, or `0` for auto; validated against the radio's list |
-| `--set-htmode` | Channel width in MHz: `20`, `40`, `80`, or `auto` where offered |
-| `--set-hwmode` | Hardware mode, e.g. `11a/n/ac`; run `goglnet` for the radio's list |
-| `--set-txpower` | `Max`, `High`, `Medium` or `Low` |
-
-```bash
-goglnet --device radio1 --set-channel 149
-goglnet --device radio1 --set-htmode 80 --set-txpower Low
-goglnet --device radio0 --set-channel 0      # auto
-```
-
-Both scopes combine in one invocation; gogl issues the two calls the firmware needs and reports
-which applied.
-
-#### Four things about the wireless flags
-
-**They take an explicit value: `--set-hidden=false`, not a bare `--set-hidden`.** A partial
-update has to distinguish "set this to false" from "leave it alone", and Go's flag package
-treats both as `false`. A bare boolean flag meaning true is exactly how `--set-enabled` ends up
-disabling something. Same reason `--set-channel=0` works: 0 means auto, so it cannot double as
-"unset".
-
-**Only the fields you name are sent.** Setting a passphrase leaves the SSID, encryption, and
-enabled state exactly as they were.
-
-**Ethernet only.** Every wireless write is refused when the session arrives over WiFi:
-
-```
-gogl: refusing to change wireless over a wireless session: this session is on 5G
-  changing wireless would drop it, with no address to reconnect at
-  connect over ethernet and try again
-```
-
-gogl finds the address it reaches the router from in the router's own client list and reads the
-interface the firmware reports for it. `--yes` does **not** override this — the prompt is about
-intent, the guard is about whether you can still reach the device afterward. A session from
-off-LAN is allowed, since no radio here carries it. Tuning is gated too: retuning drops the
-radio's clients just as thoroughly as renaming it.
-
-**They prompt.** Every wireless write shows the before and after and asks `y/N`. `--yes` skips
-it for scripts. Unlike `goglps --del`, a non-terminal stdout does not imply consent: there the worst
-case is a lost reservation, here it is a device you have to walk to. DFS channels get an extra
-warning — the radio must vacate one if it detects radar, taking every client with it for the
-minutes it spends re-scanning. A poor choice for kit that has to come up reliably in an
-unfamiliar building.
-
----
-
-### `goglmac` — connected clients
-
-Read-only. Lists what is connected, with IEEE OUI manufacturer lookup done independently of the
-router.
-
-| Flag | Short | What it does |
-|------|-------|--------------|
-| `--all` | `-a` | Every client (default) |
-| `--wifi` | `-w` | Wireless clients only |
-| `--wired` | `-e` | Wired clients only |
-| `--reserved` | `-r` | Mark which clients hold a reservation |
-| `--json` | `-j` | JSON instead of text |
-
-```bash
-goglmac                 # everything
-goglmac -w              # who is on the radios
-goglmac -r              # which clients are worth reserving
-```
-
-The OUI database is downloaded from IEEE and cached. A download failure is not fatal if a cache
-exists; if there is no cache, `goglmac` exits 1 rather than printing a table of blanks that
-looks like every device is from an unknown vendor.
-
----
-
-### `goglcfg` — whole-network profiles
-
-Captures a router's reproducible configuration to JSON, and applies one back — onto the same
-router or a different one.
-
-```bash
-goglcfg --get > lab.json                 # capture
-goglcfg --set lab.json --dry-run         # preview
-goglcfg --set lab.json                   # apply
-goglcfg --set lab.json --wireless        # apply the wireless sections too
-```
-
-| Flag | Short | What it does |
-|------|-------|--------------|
-| `--get` | `-g` | Capture a profile to stdout |
-| `--set [file]` | `-s` | Apply a profile from a file, or stdin |
-| `--with-keys` | | With `--get`, include WiFi passphrases in cleartext |
-| `--wireless` | | With `--set`, apply the wireless sections; needs a wired session |
-| `--dry-run` | | Show what would change, change nothing |
-| `--force` | | Allow a subnet move while reservations exist |
-
-#### What a profile is, and is not
-
-**It is not a router image.** It carries what defines a *network* — LAN address and DHCP pool,
-reservations, DNS names and domain, wireless identity and radio tuning — and omits everything
-identifying a particular unit: the router's own MAC, serial number, uptime, lease state.
-
-That omission is the point. Those fields are exactly what makes a full config dump useless on a
-second router. Client MAC addresses *are* included, since a reservation is a MAC-to-IP binding
-and a profile without them would reproduce nothing.
-
-Every section comes from an endpoint verified against hardware. That is why the file is small:
-the API exposes 110 getters and 23 are verified, and a profile built on the rest would be
-guesswork. Lease time, upstream DNS servers, firewall, VPN and VLANs are absent because no
-verified endpoint writes them.
-
-#### Passphrases are omitted by default
-
-```bash
-goglcfg --get > lab.json              # no keys; safe to commit
-goglcfg --get --with-keys > lab.json  # keys in cleartext
-```
-
-An omitted key is not an empty key. On apply, a missing key is simply not written, which leaves
-whatever the target router already has — so a key-less profile is safe rather than destructive.
-That relies on `wifi.set_config` leaving unmentioned fields alone, which is verified on hardware.
-
-#### The apply order, and why a subnet move stops the run
-
-`--set` applies in a fixed order, each step placed where it is because doing it later fails:
-
-1. **Domain**, because reservation writes are refused without one.
-2. **Network**, because reservations must be inside the subnet before they are written.
-3. **Reservations**, then **DNS names**.
-4. **Wireless** last, opt-in — it is the step most likely to be refused, and failing there should
-   not undo the addressing having been applied.
-
-**If the profile's subnet differs from the router's, the run stops after step 2.** The router
-changes address mid-write, so nothing after it is reachable from that session:
-
-```
-network: 192.168.8.1/255.255.255.0 -> 192.168.4.1/255.255.255.0
-
-the router has moved to 192.168.4.1. The rest of the profile was not applied.
-resume with:  goglcfg -H 192.168.4.1 --set lab.json
-```
-
-Re-run at the new address and it completes. Reporting success for a run that wrote a third of the
-profile would be a lie. A pool-only difference is not a move, so that case runs straight through.
-
-The subnet move is refused while reservations exist unless `--force`, same as `goglnet`.
-
-#### Applying to a different model
-
-A model mismatch warns rather than fails:
-
-```
-warning: profile is from "mt3000", this router is "sft1200"
-  addresses and names are portable; wireless interface and radio names
-  may not exist on this model, and will be reported and skipped
-```
-
-Addresses and names carry over cleanly. Wireless is where models diverge — interface names, radio
-names, channel lists and hardware modes are all per-device and per-regulatory-domain. Interfaces
-the target does not have are reported and skipped, not treated as errors.
-
-`--set` is idempotent: a second run reports nothing to do and leaves the host file byte-identical.
-
----
+Details and the reasoning: [The three guards](docs/gogl-guide.md#the-three-guards).
 
 ## Common tasks
 
 ### Copy a whole network from UniFi
 
 ```bash
-# On the UniFi side, at home.
+# At home, against the controller:
 gofips -H 192.168.4.1 -k --get > home.hosts
-git add home.hosts && git commit -m "capture lab network"
+git add home.hosts && git commit -m "capture lab addressing"
 
 # On the travel router, in order:
-goglps --domain lab.example                    # 1. domain first, or writes are refused
-goglnet --set-ip 192.168.4.1 --set-mask 255.255.255.0 \
-        --set-start 192.168.4.100 --set-end 192.168.4.149   # 2. match the subnet
-goglps --set home.hosts --dry-run              # 3. preview
-goglps --set home.hosts                        # 4. apply
+gogl lan dns set --domain lab.example
+gogl lan set --ip 192.168.4.1 --mask 255.255.255.0 \
+             --pool-start 192.168.4.100 --pool-end 192.168.4.149
+# the router moves; reconnect at the new address
+gogl -H 192.168.4.1 lan reservations import home.hosts --dry-run
+gogl -H 192.168.4.1 lan reservations import home.hosts
 ```
 
-Step 2 moves the router to a new address, so **the session drops** and you reconnect at the
-new one. It is refused if reservations already exist — clear them with `goglps --clear` first.
-Step 1 only needs doing once per router.
+`import` is idempotent: run it twice and the second run reports everything skipped and leaves
+the host file byte-identical. That is what makes a host file usable as a checked-in
+description of a network.
 
-`--set` is idempotent: run it twice and the second run reports everything as skipped. That is
-what makes a host file usable as a checked-in description of a network.
-
-By default, reservations on the router but absent from your file are left alone and counted.
-`--prune` deletes them; `--clear` deletes everything.
-
-### Managing the domain and clearing out
+### Clone one router onto another
 
 ```bash
-goglps --domain lab.example      # set it, or change it and requalify existing names
-goglps --clear --dry-run         # list what would go
-goglps --clear                   # delete ALL reservations AND DNS names
+gogl --router home   profile export --with-keys > home.json
+gogl --router travel profile import home.json --wireless
 ```
 
-Changing the domain rewrites every managed host entry to the new suffix, so resolution does
-not split between two domains.
+### Set up the wireless for a site
 
-`--clear` removes the DNS names as well as the reservations, because they are one intent stored
-in two places. Leaving the names behind would strand records pointing at addresses the router
-no longer reserves — and since clearing is what unblocks a renumber, those names would then be
-answering for a subnet that no longer exists. The domain survives a clear: it is configuration,
-not content.
-
-### Rename the WiFi to match the site
+Over ethernet — wireless writes are refused otherwise.
 
 ```bash
-goglnet                                                   # find the interface name
-goglnet --iface default_radio0 --set-ssid player-test --dry-run
-goglnet --iface default_radio0 --set-ssid player-test
+gogl radio list                                   # interface names and what each radio accepts
+gogl wifi set --band 2.4 --ssid site-2g
+gogl wifi set --band 5   --ssid site-5g
+gogl wifi set --band 5   --passphrase             # prompts, echo off
+gogl radio set --band 5  --channel 149            # move off a congested channel
 ```
 
-Must be over ethernet, and it prompts. Full flag reference in
-[`goglnet`](#goglnet--network-and-wireless).
-
-### Move off a congested channel
+### Find what is worth reserving
 
 ```bash
-goglnet                                    # see the channels this radio supports
-goglnet --device radio1 --set-channel 149
+gogl clients list --reserved     # who has a reservation and who does not
+gogl lan leases                  # what the router is handing out dynamically
+gogl clients vendor b4:0e:cf:2a:85:6f    # offline OUI lookup, no router needed
 ```
 
-The most common reason to touch tuning on a travel router: the site's existing WiFi is sitting
-on the channel yours picked. Combine with `goglmac -w` to see who is actually associated.
-
-### Export, edit, push back
+### Manage names
 
 ```bash
-goglps --get > current.hosts
-$EDITOR current.hosts
-goglps --set current.hosts
+gogl lan dns show
+gogl lan dns set --domain lab.example
+gogl lan dns add nas 192.168.8.13
+gogl lan dns rm nas
 ```
 
-### Delete a reservation
-
-```bash
-goglps --del --name nas
-goglps --del --mac aa:bb:cc:dd:ee:01
-goglps --del --ip 192.168.8.13
-```
-
-This removes the DHCP reservation. It does not affect DNS, because the reservation never
-provided any.
-
-### List clients by connection type
-
-```bash
-goglmac --wired
-goglmac --wifi
-goglmac -j -r          # JSON, marking which clients already have a reservation
-```
+More: [Recipes](docs/gogl-guide.md#recipes).
 
 ## Before you import: two things to get right
-
-`gogl` will not change the router's own network configuration, which means two settings are
-yours to get right in the GL.iNet admin panel. Both cause failures that are hard to read
-back from the symptom.
 
 ### Match the subnet
 
 A reservation at `192.168.4.10` is meaningless on a router whose LAN is `192.168.8.0/24`.
-Either set the router's LAN address under **LAN → Router IP Address** in the admin panel, or
-let gogl do it:
+Either move the router:
 
 ```bash
-goglps --clear                                  # required first: see below
-goglnet --set-ip 192.168.4.1 --set-mask 255.255.255.0 \
-        --set-start 192.168.4.100 --set-end 192.168.4.149 --dry-run
-goglnet --set-ip 192.168.4.1 --set-mask 255.255.255.0 \
-        --set-start 192.168.4.100 --set-end 192.168.4.149
+gogl lan reservations clear                       # or pass --force below
+gogl lan set --ip 192.168.4.1 --mask 255.255.255.0 \
+             --pool-start 192.168.4.100 --pool-end 192.168.4.149
 ```
 
-Either way your management session drops when the router moves, and you reconnect at the new
-address. `goglnet` refuses the change while reservations exist, because renumbering underneath
-the firmware silently rewrites every one of them into the new subnet instead.
+or renumber the file. `gogl lan reservations import` refuses any address outside the current
+subnet rather than writing something inert, and names the mismatch.
 
-`goglps` refuses any reservation outside the current subnet rather than writing something
-inert, and tells you both ways to fix it:
-
-```
-error: subnet mismatch
-  host file:   192.168.4.0/24 (38 of 38 entries)
-  router LAN:  192.168.8.1/24
-
-Resolve by either:
-  - Setting the router's LAN address to 192.168.4.1/24 in the GL.iNet admin panel
-    (LAN -> Router IP Address), then re-running. Your management session will drop
-    and you will need to reconnect at the new address.
-  - Renumbering the host file into 192.168.8.0/24 before re-running.
-```
+The session drops when the router moves. That is inherent, not a defect: gogl treats a lost
+connection as success and prints the address to reconnect at.
 
 ### Do not copy your home network's DNS servers
 
-This is the trap. If your home network hands out a Pi-hole at `192.168.4.5` and you
-configure the travel router to advertise the same resolver, every client at the customer
-site is told to use a DNS server that does not exist there. It presents as "the internet is
-broken," not as "DNS is misconfigured."
+This is the trap. If your home network hands out a Pi-hole at `192.168.4.5` and you configure
+the travel router to advertise that same resolver, every client at the customer site is told
+to use a DNS server that does not exist there. It presents as "the internet is broken", not
+as "DNS is misconfigured".
 
-Leave the router advertising **itself**. dnsmasq answers your reservation names locally and
-forwards everything else to whatever resolver the WAN handed it — which works in a hotel, at
-a customer site, and on a bench with no uplink at all. Public resolvers like `1.1.1.1` are
-safe if you want them, since they work anywhere.
+Leave the router advertising **itself**: dnsmasq answers your reservation names locally and
+forwards everything else to whatever resolver the WAN handed it. That works in a hotel, at a
+customer site, and on a bench with no uplink. Public resolvers like `1.1.1.1` are safe too,
+since they work anywhere.
+
+gogl cannot write upstream DNS servers, so this is a warning about the admin panel rather
+than about a command.
 
 ## Limitations
 
 Deliberate, and documented rather than worked around.
 
 | Not supported | Why |
-|---------------|-----|
-| Wireless writes over a wireless session | Refused, because applying one severs the session with no address to reconnect at. Connect over ethernet. |
-| Radio tuning beyond channel, bandwidth, hardware mode and power | Nothing else is exposed by `wifi.set_config`. |
-| VLANs | The Opal exposes no VLAN configuration through its API. Reaching them means LuCI, UCI, and `swconfig` on a SiFlower switch, which is both outside this tool's rules and unreliable in practice. |
-| Changing lease time or upstream DNS servers | No verified endpoint sets them. The LAN address and DHCP pool *are* writable, with `goglnet --set-*`. |
-| Setting dnsmasq's `domain` / `local` / `expandhosts` | No endpoint exposes them, and `/ubus` is 404 on this model. gogl carries its own domain and writes FQDNs into the host file instead, which works for any suffix. |
-| DNS names via reservations | Reservations do not create DNS records. Use the host file — `goglps --domain` plus host entries. |
-| DFS channels are not offered | `wifi.get_config` lists nine 5GHz channels; the driver supports twenty-five. The sixteen missing are the DFS ones, and `dfs_support: false` reports GL.iNet's policy rather than the radio's capability. `goglnet --set-channel 52` is refused because the firmware will not accept it, not because the hardware cannot. |
-| Monitor mode and packet injection | Not reachable over the API, and not usable on this hardware anyway: the driver advertises monitor mode, refuses to add an interface while the APs are up, and hung the device when one was brought up with them down. Recovered by power cycle. Use a USB adapter. |
-| VPN, firewall, port forwarding | Out of scope for v1. |
-| Firmware 3.x | Different API entirely (REST, not JSON-RPC). |
-| Hostnames containing `_` | Not a legal DNS label character. `gofips` permits it; `goglps` rejects it rather than silently rewriting it to `-`. This is the one case where a `gofips` file will not import unchanged. |
-| `goglmac` with no cached OUI data and no internet | Hard failure, matching `gofimac`. Run it once with a network connection and the 30-day cache covers you afterward. |
-| An OUI download that returns HTTP 418 | IEEE's bot filter rejecting the client. `goglmac` sends an explicit `User-Agent` to avoid it; if you see this, something is rewriting the header. A stale cache still works. |
-| Repeated failed logins locking you out | The firmware's brute-force protection. After roughly a dozen failures it refuses even a **correct** password for about ten minutes, and reports the remaining wait. gogl surfaces this as its own error with the countdown, because retrying makes it worse. |
+|---|---|
+| WAN configuration | 2 of 40 methods verified across `netmode`, `cable`, `repeater`, `tethering`, `modem`. Designed, not built: see [`TODO.md`](TODO.md) |
+| Device access control | `acl` has 8 methods, none verified. Same reason |
+| Wireless writes over a wireless session | Refused: applying one severs the session with no address to reconnect at |
+| Lease time, upstream DNS servers | Readable; no verified write endpoint |
+| Setting dnsmasq's `domain` / `local` / `expandhosts` | No endpoint exposes them, and `POST /ubus` is 404 on this model. gogl carries its own domain and writes FQDNs instead, which works for any suffix |
+| DNS names via reservations | A reservation creates no DNS record on this firmware. Use `lan dns` |
+| DFS channels | `wifi.get_config` offers nine 5GHz channels; the driver supports twenty-five. The missing sixteen are the DFS ones, so `dfs_support: false` reports GL.iNet's policy, not the radio's capability |
+| Monitor mode, packet injection | Not reachable over the API, and not usable on this hardware: the driver advertises monitor mode, refuses an interface while the APs are up, and hung the device when one was brought up with them down |
+| VLANs | The Opal exposes no VLAN configuration through its API |
+| VPN, firewall, port forwarding | Out of scope |
+| Firmware 3.x | Different API entirely: REST, not JSON-RPC |
+| Generic OpenWrt | GL.iNet 4.x only, permanently. See [Scope](VISION.md#scope) |
+| Hostnames containing `_` | Not a legal DNS label character. `gofips` permits it; `gogl` rejects it rather than silently rewriting to `-`. The one case where a `gofips` file will not import unchanged |
+| `clients` with no cached OUI data and no internet | Hard failure rather than a table of blanks that looks like every device is from an unknown vendor |
 
-One tool would close a real gap and is not in v1:
+One tool would close a real gap and is not built:
 
-- **`goglrenumber`** — rewrite the network part of every address in a host file to a target
-  subnet, preserving host parts. The alternative to re-IPing the router: move the file to
-  the router's subnet instead of the router to the file's. A pure text transformation, so
-  cheap to trust.
-
-Re-IPing the router itself is covered: `goglnet --set-ip`. It stayed out of `goglps` so that
-losing contact with the device is never a side effect of importing a host file.
-
----
+- **`gogl lan reservations renumber`** — rewrite the network part of every address in a host
+  file to a target subnet, preserving host parts. The alternative to re-IPing the router. A
+  pure text transformation, so cheap to trust.
 
 # Part 2: Using gogl in your Go program
 
@@ -855,14 +412,20 @@ hazard, and a CLI that cannot reach a self-signed device out of the box is usele
 ## Services
 
 ```go
-client.Network()      // LAN and DHCP configuration       (read/write)
-client.Reservations() // static MAC-to-IP bindings        (read/write)
-client.Hosts()        // DNS names via the host file      (read/write)
-client.Clients()      // connected stations               (read-only)
-client.System()       // model, firmware, uptime          (read-only)
+client.Network()      // LAN and DHCP configuration        (read/write)
+client.Reservations() // static MAC-to-IP bindings         (read/write)
+client.Hosts()        // DNS names via the host file       (read/write)
+client.Wireless()     // radios and wireless interfaces    (read/write)
+client.Clients()      // connected stations                (read-only)
+client.System()       // model, firmware                   (read-only)
 ```
 
 No method takes a `site` parameter.
+
+Every service is an interface, so a consumer can substitute a fake without the mock server.
+The interfaces are semantic rather than wire-shaped — `Network().Set` rather than
+`Call("lan", "set_config", …)` — which is what lets the guards live in the library instead of
+in each caller.
 
 ### Reading the network
 
@@ -972,6 +535,49 @@ When the subnet *does* move, expect the call to fail with a lost connection *on 
 router changes address mid-request. `goglnet` treats that as expected and tells you where to
 reconnect. A pool-only change has no such problem.
 
+### Wireless
+
+Two scopes, mirroring how the firmware scopes writes.
+
+```go
+// Per radio: channel, width, hardware mode, transmit power.
+radios, err := client.Wireless().Radios(ctx)
+for _, r := range radios {
+    fmt.Println(r.Band, r.Device, r.Channel, r.HTMode)
+    fmt.Println(r.ChannelNumbers())    // what this radio actually offers
+    fmt.Println(r.HTModeOptions())     // settable widths for its current hwmode
+}
+
+channel := 149
+err = client.Wireless().SetRadio(ctx, "radio1", types.RadioChanges{Channel: &channel})
+
+// Per interface: SSID, passphrase, encryption, hidden, enabled.
+ssid := "lab-5g"
+err = client.Wireless().SetInterface(ctx, "default_radio1", types.InterfaceChanges{
+    SSID: &ssid,
+})
+```
+
+Pointer fields are the partial-update contract: a nil field is not written, so setting an
+SSID leaves the passphrase alone. `Empty()` reports whether there is anything to send.
+
+Both setters return `ErrWirelessSession` when the calling session arrives over WiFi.
+`SessionInterface` answers the same question directly:
+
+```go
+switch path, err := client.Wireless().SessionInterface(ctx); path {
+case "cable":
+    // safe to write
+case "":
+    // off-LAN: no radio here carries this session, also safe
+default:
+    // "2.4G" or "5G": a write would sever this session
+}
+```
+
+Values are validated against what each radio advertises, so an unsupported channel is
+refused with the available ones named rather than answered by a bare firmware error.
+
 ### Errors
 
 ```go
@@ -1036,16 +642,30 @@ gogl/
 ├── src/                    # Library (package gogl)
 │   ├── client.go           # Client, Config, service accessors
 │   ├── errors.go           # Sentinels, RPCError
-│   ├── types/              # Reservation, Network, Client, SystemInfo, LeaseTime
-│   ├── services/           # Network, Reservations, Clients, System
+│   ├── types/              # Reservation, Network, Client, HostFile, Wireless, LeaseTime
+│   ├── services/           # Network, Reservations, Hosts, Wireless, Clients, System
 │   ├── auth/               # Challenge/response login, unix crypt
 │   ├── transport/          # JSON-RPC envelope, session, keepalive, retry
 │   ├── mock/               # In-process router for tests
 │   └── ipmath/             # IPv4 arithmetic
-├── utilities/              # goglps, goglnet, goglmac
+├── utilities/
+│   ├── gogl/               # the single binary: cobra command tree
+│   └── internal/
+│       ├── config/         # TOML, XDG paths, password resolution
+│       ├── conn/           # connection flags, secrets, version stamp
+│       ├── reservations/   # ISC DHCP parse/format, import/export, add/rm/clear
+│       ├── netcfg/         # network report, LAN write, wireless writes, band resolution
+│       ├── clients/        # station list, IEEE OUI database
+│       └── profile/        # whole-network capture and apply
 ├── examples/               # basic, list, reservations
-└── docs/                   # DESIGN.md, plan.md
+├── discovery/              # probes: shape, hostfile, auth diagnosis
+├── scripts/                # check-docs, api-docs generation, hardware test
+└── docs/                   # gogl-guide.md, DESIGN.md, DESIGN-V2.md, api/
 ```
+
+The four former utilities became importable packages under `utilities/internal/`, so their
+logic and tests survived the move to one command tree. `utilities/gogl` is flag wiring over
+those packages and holds no logic of its own.
 
 ## Build targets
 
@@ -1055,7 +675,10 @@ make test       # go test -v -race -cover ./...
 make lint       # golangci-lint
 make coverage   # HTML coverage report
 make examples   # build the examples
-make install    # utilities into ~/bin (override INSTALL_DIR)
+make install    # gogl into ~/.local/bin (override INSTALL_DIR)
+make uninstall  # remove it, including from the legacy ~/bin
+make check-docs # verify documented flags and links against the built binary
+make hil-test   # hardware-in-the-loop test: writes to a real router, then restores it
 make all        # lint, test, build
 ```
 
