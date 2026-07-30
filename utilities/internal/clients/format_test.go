@@ -16,7 +16,7 @@ func testEntries() []Entry {
 
 func TestFormatText(t *testing.T) {
 	var buf bytes.Buffer
-	if err := FormatText(&buf, testEntries(), false); err != nil {
+	if err := FormatText(&buf, testEntries(), FormatOptions{}); err != nil {
 		t.Fatalf("FormatText error: %v", err)
 	}
 	out := buf.String()
@@ -34,7 +34,7 @@ func TestFormatText(t *testing.T) {
 
 func TestFormatTextWithReservedColumn(t *testing.T) {
 	var buf bytes.Buffer
-	if err := FormatText(&buf, testEntries(), true); err != nil {
+	if err := FormatText(&buf, testEntries(), FormatOptions{ShowReserved: true}); err != nil {
 		t.Fatalf("FormatText error: %v", err)
 	}
 	out := buf.String()
@@ -45,7 +45,7 @@ func TestFormatTextWithReservedColumn(t *testing.T) {
 
 func TestFormatTextWithoutReservedColumn(t *testing.T) {
 	var buf bytes.Buffer
-	if err := FormatText(&buf, testEntries(), false); err != nil {
+	if err := FormatText(&buf, testEntries(), FormatOptions{}); err != nil {
 		t.Fatalf("FormatText error: %v", err)
 	}
 	if strings.Contains(buf.String(), stateDynamic) {
@@ -55,11 +55,18 @@ func TestFormatTextWithoutReservedColumn(t *testing.T) {
 
 func TestFormatTextEmpty(t *testing.T) {
 	var buf bytes.Buffer
-	if err := FormatText(&buf, nil, false); err != nil {
-		t.Fatalf("FormatText error: %v", err)
+	if err := FormatText(&buf, nil, FormatOptions{}); err != nil {
+		t.Fatalf("FormatText: %v", err)
 	}
-	if buf.Len() != 0 {
-		t.Errorf("expected no output for no entries, got %q", buf.String())
+
+	// Not silence: with the online-only default, an empty result has two possible
+	// causes and the reader deserves to know which.
+	got := buf.String()
+	if !strings.Contains(got, "--all") {
+		t.Errorf("empty output does not mention how to include offline clients: %q", got)
+	}
+	if strings.Contains(got, "MAC") {
+		t.Errorf("a header was printed with no rows under it: %q", got)
 	}
 }
 

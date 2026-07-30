@@ -74,7 +74,11 @@ func List(ctx context.Context, client *gogl.Client, out io.Writer, opts Options)
 	if opts.JSON {
 		return FormatJSON(out, entries)
 	}
-	return FormatText(out, entries, opts.ShowReserved)
+	return FormatText(out, entries, FormatOptions{
+		ShowReserved: opts.ShowReserved,
+		// Only worth a column when an offline row can actually appear.
+		ShowOnline: opts.IncludeOffline,
+	})
 }
 
 // FilterFor resolves the mutually exclusive band selectors into a Filter.

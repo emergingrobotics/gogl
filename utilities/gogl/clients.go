@@ -26,11 +26,21 @@ IEEE OUI registry independently of the router.`,
 }
 
 func newClientsListCommand() *cobra.Command {
-	var wifi, wired, reserved bool
+	var wifi, wired, reserved, all bool
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List connected stations",
-		Args:  cobra.NoArgs,
+		Long: `List connected stations.
+
+Only clients the router currently sees, by default. The client list carries history: a
+router renumbered from 192.168.2.0/24 to 192.168.8.0/24 was still listing a station at
+192.168.2.138, and presenting that beside live clients with no distinction is worse than
+not showing it. Pass --all to include them, which adds an ONLINE column.
+
+SINCE reports how long a client has been connected, where the firmware's value can be
+understood -- its format is undocumented and uncaptured, so it is rendered when it makes
+sense and left blank when it does not.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			keep, err := clients.FilterFor(wifi, wired)
 			if err != nil {
@@ -44,9 +54,10 @@ func newClientsListCommand() *cobra.Command {
 			defer client.Close()
 
 			return explain(clients.List(cmd.Context(), client, os.Stdout, clients.Options{
-				Keep:         keep,
-				ShowReserved: reserved,
-				JSON:         asJSON(),
+				Keep:           keep,
+				ShowReserved:   reserved,
+				IncludeOffline: all,
+				JSON:           asJSON(),
 			}))
 		},
 	}
@@ -54,6 +65,8 @@ func newClientsListCommand() *cobra.Command {
 	f.BoolVarP(&wifi, "wifi", "w", false, "only wireless stations")
 	f.BoolVarP(&wired, "wired", "e", false, "only wired stations")
 	f.BoolVarP(&reserved, "reserved", "r", false, "mark which stations hold a reservation")
+	f.BoolVarP(&all, "all", "a", false,
+		"include clients the router remembers but does not currently see")
 	return cmd
 }
 
