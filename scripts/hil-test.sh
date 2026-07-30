@@ -47,6 +47,7 @@ INCLUDE_UPLINK_RADIO=0
 DRY_RUN=0
 ASSUME_YES=0
 KEEP_BASELINE=0
+CALL_DELAY="${CALL_DELAY:-1}"
 WORKDIR="${WORKDIR:-$(mktemp -d)}"
 
 usage() {
@@ -68,6 +69,8 @@ Options:
   --dry-run              list what would be tested and exit, touching nothing
   --yes                  skip the confirmation prompt
   --keep-baseline        leave the baseline profile on disk after a successful run
+  --delay SECONDS        pause between gogl calls (default 1). Each call is a full
+                         login, and the firmware rate-limits them.
   -h, --help             this text
 
 Safety:
@@ -81,8 +84,10 @@ Safety:
   * Nothing here reboots, upgrades, or changes the admin password.
 
 Environment:
-  GOGL       the binary to test (default: gogl on PATH)
-  WORKDIR    where to keep the baseline (default: a temporary directory)
+  GOGL          the binary to test (default: gogl on PATH)
+  WORKDIR       where to keep the baseline (default: a temporary directory)
+  CALL_DELAY    seconds between gogl calls (default 1)
+  LOCKOUT_WAIT  seconds to wait for a lockout to clear before giving up (default 900)
 USAGE
 }
 
@@ -94,6 +99,7 @@ while [ $# -gt 0 ]; do
         --dry-run)              DRY_RUN=1; shift ;;
         --yes)                  ASSUME_YES=1; shift ;;
         --keep-baseline)        KEEP_BASELINE=1; shift ;;
+        --delay)                CALL_DELAY="$2"; shift 2 ;;
         -h|--help)              usage; exit 0 ;;
         *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -119,7 +125,73 @@ fail() {
     printf '  \033[31mFAIL\033[0m  %s\n' "$*"
 }
 
-g() { "$GOGL" "${ROUTER_FLAG[@]}" "$@"; }
+# Every gogl invocation performs a full login: two challenge calls and a login. The
+# firmware's brute-force protection counts those, and a run of this script makes dozens.
+#
+# OBSERVED 2026-07-30: an unpaced run locked the account out after the first test, and the
+# remaining seven cascaded into failures and skips that hid the cause. Worse, restore could
+# not authenticate either, so the router was left with a probe value in place.
+#
+# Two defences: pace the calls, and stop at the first sign of a lockout rather than
+# spending the next sixty calls making it worse.
+LOCKED_OUT=0
+
+g() {
+    if [ "$LOCKED_OUT" = 1 ]; then
+        return 1
+    fi
+    sleep "$CALL_DELAY"
+
+    local out status
+    out=$("$GOGL" "${ROUTER_FLAG[@]}" "$@" 2>&1)
+    status=$?
+
+    if printf '%s' "$out" | grep -qE 'rate limiting|too many failed logins'; then
+        LOCKED_OUT=1
+        printf '%s\n' "$out" >&2
+        return 1
+    fi
+
+    printf '%s\n' "$out"
+    return "$status"
+}
+
+# require_session aborts the run when the router has stopped authenticating.
+#
+# Called between tests. Continuing past a lockout produces a page of failures that say
+# nothing about the real problem, and leaves less time for the restore to succeed.
+require_session() {
+    [ "$LOCKED_OUT" = 0 ] && return 0
+    cat >&2 <<'MSG'
+
+hil-test: the router is rate limiting and has stopped authenticating.
+
+Every gogl invocation logs in again, and this script makes dozens. Waiting for the
+lockout to clear before attempting the restore.
+MSG
+    return 1
+}
+
+# wait_for_session blocks until the router authenticates again, or gives up.
+#
+# Restore matters more than the tests: leaving a probe value in place is the one outcome
+# this script must not produce.
+wait_for_session() {
+    local waited=0 interval=30 limit="${LOCKOUT_WAIT:-900}"
+
+    while [ "$waited" -lt "$limit" ]; do
+        if "$GOGL" "${ROUTER_FLAG[@]}" system info >/dev/null 2>&1; then
+            LOCKED_OUT=0
+            printf '  session recovered after %ds\n' "$waited"
+            return 0
+        fi
+        printf '  waiting for the lockout to clear (%ds of up to %ds)\r' "$waited" "$limit"
+        sleep "$interval"
+        waited=$((waited + interval))
+    done
+    printf '\n'
+    return 1
+}
 
 # jget reads a value out of a gogl JSON response.
 jget() { jq -r "$1" 2>/dev/null; }
@@ -259,6 +331,19 @@ restore() {
     RESTORED=1
 
     bold "Restoring baseline"
+
+    # A lockout is the likeliest reason to be here, and restoring matters more than the
+    # tests did. Wait it out rather than failing immediately with a probe value in place.
+    if [ "$LOCKED_OUT" = 1 ]; then
+        printf '  the router is rate limiting; waiting before restore\n'
+        if ! wait_for_session; then
+            printf '\033[31m  Could not authenticate to restore.\033[0m Baseline kept at:\n    %s\n' \
+                "$BASELINE" >&2
+            printf '  Wait for the lockout to clear, then run:\n    %s profile import %s --wireless --force\n' \
+                "$GOGL" "$BASELINE" >&2
+            return
+        fi
+    fi
 
     # Clear first. profile import adds and updates but never prunes, so a reservation or
     # DNS name this test created would survive a plain import and silently persist.
@@ -631,7 +716,7 @@ TESTS=(
 if [ "$DRY_RUN" = 1 ]; then
     bold "Would run, touching nothing:"
     printf '  %s\n' "${TESTS[@]}"
-    printf '\nuplink radio: %s\n' \
+    printf '\ndelay between calls: %ss   uplink radio: %s\n' "$CALL_DELAY" \
         "$([ "$INCLUDE_UPLINK_RADIO" = 1 ] && echo included || echo skipped)"
     trap - EXIT INT TERM
     exit 0
@@ -653,6 +738,9 @@ fi
 capture_baseline
 
 for t in "${TESTS[@]}"; do
+    if ! require_session; then
+        break
+    fi
     "$t"
 done
 

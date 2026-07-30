@@ -30,6 +30,11 @@ const (
 // data.wait field giving the remaining lockout in seconds.
 const CodeLoginRateLimited = -32003
 
+// CodeAccessDenied is what the firmware returns for a refused credential -- and also
+// for a challenge call refused by brute-force protection, which is why the two cases
+// have to be told apart by which method was called.
+const CodeAccessDenied = -32000
+
 // Hash methods as returned in the challenge response's "hash-method" field. This
 // is a separate choice from alg: it selects the digest applied to the login
 // string, not the crypt used on the password.

@@ -107,6 +107,9 @@ than a feature. `--del` and `--clear` remove both.
 
 ---
 
+> **Full command reference:** [`docs/gogl-guide.md`](docs/gogl-guide.md) documents every
+> area, subcommand and flag, with recipes and troubleshooting.
+
 # Part 1: Command-line programs
 
 Four tools. The first three mirror `gofi`'s one-for-one, so that knowing one set means

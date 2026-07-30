@@ -191,6 +191,24 @@ func (a *Authenticator) post(ctx context.Context, method string, params, out any
 			}
 			return fmt.Errorf("%w: %s", ErrLoginRateLimited, envelope.Error.Message)
 		}
+
+		// An access denial on challenge is also rate limiting, reported under a
+		// different code.
+		//
+		// challenge carries only a username: no password, no digest, no session. A
+		// denial there cannot mean a wrong password, so reporting it as "Access denied"
+		// sends the operator to check a credential that was never sent.
+		//
+		// OBSERVED 2026-07-30: a script making ~70 separate gogl invocations, each
+		// performing a full login, drew -32000 from challenge on every call after the
+		// first few, with no wait value and no -32003.
+		if method == "challenge" && envelope.Error.Code == CodeAccessDenied {
+			return fmt.Errorf("%w: the challenge call was denied, and it carries no "+
+				"password -- the router is rate limiting after repeated logins. Wait a "+
+				"few minutes. Note that each gogl invocation logs in again, so a script "+
+				"making many separate calls can trip this: %s",
+				ErrLoginRateLimited, envelope.Error.Message)
+		}
 		return fmt.Errorf("gogl: %s failed: %s (code %d)", method, envelope.Error.Message, envelope.Error.Code)
 	}
 	if out == nil {

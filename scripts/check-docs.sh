@@ -6,7 +6,13 @@
 # grew --dry-run and --show-key with no table entry, and a README Go snippet kept
 # calling Network().Set with two arguments after it took three. Both are mechanically
 # checkable, so they should be checked mechanically.
-set -uo pipefail
+# No pipefail. `printf | grep -q` is the natural spelling for these checks, and grep -q
+# exits on its first match -- which closes the pipe, kills printf with SIGPIPE, and makes
+# pipefail report the whole pipeline as failed even though the match succeeded. That
+# produced false "undocumented flag" reports that varied with where in the file the match
+# happened to be. The checks below use bash pattern matching instead of pipes, so there is
+# nothing for pipefail to get wrong.
+set -u
 
 cd "$(dirname "$0")/.."
 
@@ -56,18 +62,44 @@ for tool in bin/*; do
     for flag in $real; do
         case " $shared " in *" $flag "*) continue ;; esac
         [ ${#flag} -lt 2 ] && continue
-        if ! printf '%s\n' "$documented" | grep -qx "$flag"; then
+        if [[ $'\n'"$documented"$'\n' != *$'\n'"$flag"$'\n'* ]]; then
             note "check-docs: $name --$flag exists but is not documented"
         fi
     done
 
     for flag in $documented; do
         case " $shared " in *" $flag "*) continue ;; esac
-        if ! printf '%s\n' "$real" | grep -qx "$flag"; then
+        if [[ $'\n'"$real"$'\n' != *$'\n'"$flag"$'\n'* ]]; then
             note "check-docs: $name --$flag is documented but does not exist"
         fi
     done
 done
+
+# --- 1b. The guide documents every flag the binary has. ----------------------------
+#
+# Checked separately from README because the guide is the complete reference: a flag missing
+# there is a documentation bug, whereas README is allowed to be selective.
+if [ -x bin/gogl ] && [ -f docs/gogl-guide.md ]; then
+    guide=$(cat docs/gogl-guide.md)
+    for leaf in "lan show" "lan set" "lan leases" \
+                "lan reservations list" "lan reservations export" "lan reservations import" \
+                "lan reservations add" "lan reservations rm" "lan reservations clear" \
+                "lan dns show" "lan dns set" "lan dns add" "lan dns rm" "lan dns clear" \
+                "radio list" "radio show" "radio set" \
+                "wifi list" "wifi show" "wifi set" \
+                "clients list" "clients vendor" \
+                "profile export" "profile import" "system info" \
+                "config show" "config routers" "config init"; do
+        # shellcheck disable=SC2086
+        body=$(bin/gogl $leaf --help 2>&1 | awk '/^Flags:/{f=1;next} /^Global Flags:/{f=0} f')
+        for flag in $(printf '%s' "$body" | grep -oE '\-\-[a-z][a-z-]*' | sed 's/^--//' | sort -u); do
+            case " $shared help " in *" $flag "*) continue ;; esac
+            if [[ $guide != *'`--'"$flag"* ]]; then
+                note "check-docs: docs/gogl-guide.md does not document \`gogl $leaf --$flag\`"
+            fi
+        done
+    done
+fi
 
 # --- 2. In-page anchor links resolve. ----------------------------------------------
 anchors=$(grep -oE '^#{1,6} .*' README.md \
@@ -75,7 +107,9 @@ anchors=$(grep -oE '^#{1,6} .*' README.md \
     | tr '[:upper:] ' '[:lower:]-' | sort -u)
 
 for link in $(grep -oE '\]\(#[^)]+\)' README.md | sed -e 's/](#//' -e 's/)//' | sort -u); do
-    printf '%s\n' "$anchors" | grep -qx "$link" || note "check-docs: broken anchor #$link"
+    if [[ $'\n'"$anchors"$'\n' != *$'\n'"$link"$'\n'* ]]; then
+        note "check-docs: broken anchor #$link"
+    fi
 done
 
 # --- 3. Relative file links resolve. ----------------------------------------------
