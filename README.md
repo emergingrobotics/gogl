@@ -10,42 +10,99 @@ This is a single monolithic configuration tool AND the go module that enables th
 Disclaimer: This works for me — that's the entire guarantee. Built with AI in the loop, so check your own biases before you love it or hate it on principle. Use at your own risk, fork freely, and don't @ me when it explodes. (But do drop me a note if it helps — pay it forward.)
 
 > **Status: working against real hardware.** Verified on a GL-SFT1200 (Opal)
-> reporting model `sft1200`, firmware **4.3.28**. All three utilities read and write
-> the live device; every endpoint gogl uses is confirmed, and the full API is
-> documented in [`docs/api/`](docs/api/README.md).
+> reporting model `sft1200`, firmware **4.3.28**. Every endpoint gogl uses reads and
+> writes the live device and is confirmed against it; the full API is documented in
+> [`docs/api/`](docs/api/README.md).
 >
 ---
 
 ## The problem
 
-A network's addressing is the part your devices actually depend on. A robot, a signage
-player, or a build machine configured to reach `nas` at `192.168.4.13` stops working the
-moment it lands on a network that disagrees.
+A travel router is the cheapest way to get a network you completely own. Plug it in
+anywhere and you have your own subnet, your own DHCP, your own DNS, and nobody else's
+traffic — in a hotel room, at a customer site, in a trade show booth, or in the corner of a
+desk where a test bench lives.
 
-Take that kit somewhere else — a customer site, a trade show, a hotel room, a test bench —
-and you have to rebuild the addressing by hand, one DHCP reservation at a time, through a
-web UI. Then do it again the next time, and again after a factory reset.
+That last one is the interesting case. An **isolated test network** is where you want your
+robots, signage players, embedded boards and devices under test. You control the addressing,
+you can capture every packet, you can power-cycle the whole network without filing a ticket,
+and nothing you do to it leaks onto the corporate LAN.
 
-`gogl` removes that. Its sibling [`gofi`](https://github.com/emergingrobotics/gofi) exports
-a UniFi site's fixed-IP bindings as an ISC DHCP host file. `gogl` imports that same file into
-a GL.iNet travel router, so the pocket router hands out the same addresses to the same MAC
-addresses as the network you copied — and can serve the same names.
+The problem is everything after "plug it in". Setup is a web UI: set the LAN subnet, size the
+DHCP pool, enter reservations one MAC address at a time, then the SSIDs, then the channels.
+It is an hour of clicking, and you get to do it again when
 
-The file is plain text, so it diffs, reviews, and lives in git. Your kit's network becomes
-reproducible from a commit rather than from memory.
+- a firmware upgrade factory-resets the unit,
+- someone borrows the router and hands it back reconfigured,
+- a second engineer needs a bench identical to yours,
+- or an experiment leaves the network in a state you cannot remember your way out of.
 
-Addresses and names come from two different mechanisms on this firmware. `goglps` writes both
-in one command, but the split explains a couple of things that would otherwise look odd — see
-[Addresses and names are separate](#addresses-and-names-are-separate).
+None of that is difficult work. It is *unrecorded* work, which means it cannot be repeated,
+reviewed, or handed to anyone else.
+
+## What gogl does about it
+
+It turns the whole router into a file.
+
+```mermaid
+flowchart LR
+    R1["bench router<br/>(configured by hand, once)"] -->|gogl profile export| F["bench.json<br/>committed to git"]
+    F -->|gogl profile import| R2["the same router,<br/>after a factory reset"]
+    F -->|gogl profile import| R3["a second bench,<br/>identical to the first"]
+```
 
 ```bash
-# At home, against the UniFi controller:
-gofips -H 192.168.4.1 -k --get > home.hosts
+# Capture a working bench, once.
+gogl profile export > bench.json
+git add bench.json && git commit -m "capture the lab bench"
 
-# Later, against the travel router:
-goglps --domain lab.example      # once per router
-goglps --set home.hosts
+# Rebuild it, any time, on any GL.iNet 4.x router.
+gogl --router bench profile import bench.json --wireless
 ```
+
+A profile is the LAN address and mask, the DHCP pool, every reservation, every DNS name, the
+domain, the wireless identity and the radio tuning. It is deliberately *not* a router image:
+it omits the unit's own MAC, serial and uptime, which is what makes it apply to a **second**
+router instead of only back to the one it came from.
+
+The file is plain JSON, so it diffs, it reviews, and it lives next to the code that depends
+on it. Your bench becomes reproducible from a commit rather than from memory.
+
+## Addresses your tests can hardcode
+
+Addressing is the part your devices and your test harness actually depend on. A fixture that
+reaches `dut-3` at `192.168.8.23`, or a signage player configured to fetch from `nas`, stops
+working the moment it lands on a network that disagrees.
+
+So pin them, by name and by address:
+
+```bash
+gogl lan dns set --domain bench.test     # once per router
+gogl lan reservations add --name dut-3 --mac 10:51:07:1f:8d:1c --ip 192.168.8.23
+```
+
+Or in bulk, from a file checked in beside the tests:
+
+```bash
+gogl lan reservations import bench.hosts
+```
+
+The file is ISC DHCP host-declaration format — plain text, and readable without a tool:
+
+```
+host dut-3 {
+    hardware ethernet 10:51:07:1f:8d:1c;
+    fixed-address 192.168.8.23;
+}
+```
+
+`import` is idempotent. Run it twice and the second run reports everything skipped and
+leaves the router byte-identical, which is what makes a host file usable as a checked-in
+description of a network rather than a one-shot script.
+
+Addresses and names come from two different mechanisms on this firmware. `gogl` writes both
+in one command, but the split explains a couple of things that would otherwise look odd — see
+[Addresses and names are separate](#addresses-and-names-are-separate).
 
 ### Addresses and names are separate
 
@@ -61,8 +118,8 @@ So there are three separate things:
 
 | What | Mechanism | Who controls it |
 |------|-----------|-----------------|
-| The address a device receives | static bind (reservation) | **gogl** — `goglps` |
-| A name you choose | the router's **host file** | **gogl** — `goglps --domain` and host entries |
+| The address a device receives | static bind (reservation) | **gogl** — `lan reservations` |
+| A name you choose | the router's **host file** | **gogl** — `lan dns` |
 | A name a device announces about itself | its DHCP lease hostname | the client |
 
 Names come from `dns.set_host`, which writes the router's `hosts(5)` file — dnsmasq answers
@@ -72,16 +129,16 @@ against the router.
 gogl owns a delimited block in that file and never touches anything outside it. The file also
 holds the loopback and IPv6 lines the router itself needs.
 
-**`goglps` writes both, and you do not have to think about it.** One host declaration becomes a
-static bind *and* a host-file entry; `--set`, `--add`, `--del`, `--prune` and `--clear` each
-keep the two in step. What the split means in practice is only this:
+**`gogl lan reservations` writes both, and you do not have to think about it.** One host
+declaration becomes a static bind *and* a host-file entry; `import`, `add`, `rm` and `clear`
+each keep the two in step. What the split means in practice is only this:
 
-- Names are batched. `dns.set_host` takes the whole file as one string, so a `--set` run makes
-  one write for every name rather than one per name.
+- Names are batched. `dns.set_host` takes the whole file as one string, so an `import` run
+  makes one write for every name rather than one write per name.
 - The two can drift if something else edits them — a hand edit in the admin panel, or a run
-  that died between the two writes. A binding with no name is repaired by the next `--set`,
+  that died between the two writes. A binding with no name is repaired by the next `import`,
   which diffs the names independently rather than skipping an entry whose binding already
-  matches. `goglps --get` reports what it finds in each.
+  matches. `gogl lan reservations list` and `gogl lan dns show` report what is in each.
 
 ### Set the domain first
 
@@ -91,17 +148,20 @@ own domain, stored inside its block in the host file, and writes fully-qualified
 suffix works, because host-file entries are literal name-to-address mappings.
 
 ```bash
-goglps --domain lab.example
+gogl lan dns set --domain bench.test
 ```
+
+`.test` is the suffix to reach for on a bench: RFC 2606 reserves it for exactly this, so it
+can never collide with a real domain. Avoid `.local` — it belongs to mDNS, and Avahi on your
+Linux clients will fight dnsmasq for it.
 
 **Reservation writes are refused until you do this.** A reservation alone produces an address
 with no name and nothing to signal that was unintended; making the domain a precondition
 forces the pairing to be deliberate.
 
-`gofips`'s `--keep-dns` has no analogue, and here it would mean something: since the two are
-separate objects, keeping a name while dropping its reservation is expressible. `gogl` does not
-offer it, because a name resolving to an address the router no longer reserves is a trap rather
-than a feature. `--del` and `--clear` remove both.
+Because the two are separate objects, "keep the name but drop the reservation" is
+expressible. `gogl` does not offer it: a name that resolves to an address the router no
+longer reserves is a trap rather than a feature. `rm` and `clear` remove both.
 
 ---
 
@@ -131,8 +191,8 @@ Nine areas. Eight act on the router; `config` acts on your machine.
 | `system` | model, firmware, endpoint | nothing |
 | `config` | gogl's own settings and named routers | writes a starter file |
 
-That is a considerably wider surface than the four utilities it replaces, which covered
-reservations, a network report, and a client list. What grew:
+Between them that covers everything you would otherwise click through on a fresh unit.
+Some of it needs explaining:
 
 **Wireless, in two halves.** `radio` and `wifi` are not an arbitrary split — they mirror how
 the firmware scopes writes. `wifi.set_config` takes `device` for channel, width, hardware
@@ -153,7 +213,7 @@ stations the router merely remembers by default. That default exists because the
 carries history: a router renumbered from `192.168.2.0/24` to `192.168.8.0/24` was still
 reporting a station at `192.168.2.138`.
 
-**Named routers and a config file.** `--router lab` selects a TOML block. Passwords are
+**Named routers and a config file.** `--router bench` selects a TOML block. Passwords are
 never in the file: environment, then a command the file names, then a prompt.
 
 **Machine-readable output.** `--output json` on every read.
@@ -201,14 +261,19 @@ gogl config show
 ```
 
 ```toml
-default = "home"
+default = "bench"
 
-[routers.home]
+[routers.bench]
 host             = "192.168.8.1"
-password_command = "pass show routers/home"
+password_command = "pass show routers/bench"
+
+[routers.travel]
+host             = "192.168.4.1"
+password_command = "pass show routers/travel"
 ```
 
-Then `gogl lan show`, `gogl clients list`, `gogl radio list`.
+Then `gogl lan show`, `gogl clients list`, `gogl radio list` — and `--router travel` to
+reach the other one.
 
 Shell completion is free:
 
@@ -252,41 +317,55 @@ Details and the reasoning: [The three guards](docs/gogl-guide.md#the-three-guard
 
 ## Common tasks
 
-### Copy a whole network from UniFi
+### Stand up a test bench from a file
+
+Order matters: the domain is a precondition for reservations, and moving the subnet drops
+your session.
 
 ```bash
-# At home, against the controller:
-gofips -H 192.168.4.1 -k --get > home.hosts
-git add home.hosts && git commit -m "capture lab addressing"
-
-# On the travel router, in order:
-gogl lan dns set --domain lab.example
+gogl lan dns set --domain bench.test
 gogl lan set --ip 192.168.4.1 --mask 255.255.255.0 \
              --pool-start 192.168.4.100 --pool-end 192.168.4.149
 # the router moves; reconnect at the new address
-gogl -H 192.168.4.1 lan reservations import home.hosts --dry-run
-gogl -H 192.168.4.1 lan reservations import home.hosts
+gogl -H 192.168.4.1 lan reservations import bench.hosts --dry-run
+gogl -H 192.168.4.1 lan reservations import bench.hosts
 ```
 
-`import` is idempotent: run it twice and the second run reports everything skipped and leaves
-the host file byte-identical. That is what makes a host file usable as a checked-in
-description of a network.
+Keep `bench.hosts` in the repo whose tests depend on those addresses. A change to the bench
+then arrives as a diff in a pull request like any other change.
 
-### Clone one router onto another
+### Capture a bench, and rebuild it after a reset
 
 ```bash
-gogl --router home   profile export --with-keys > home.json
-gogl --router travel profile import home.json --wireless
+gogl profile export > bench.json          # add --with-keys to include WiFi passphrases
+git add bench.json && git commit -m "capture the lab bench"
+
+# after a factory reset, or on a replacement unit:
+gogl profile import bench.json --wireless
 ```
 
-### Set up the wireless for a site
+If the profile's subnet differs from the reset router's default, the import applies the
+addressing and then stops — the router changes address mid-write, so nothing after that is
+reachable from the same session. It prints the command to resume at the new address.
+
+### Clone one bench onto a second router
+
+```bash
+gogl --router bench1 profile export --with-keys > bench.json
+gogl --router bench2 profile import bench.json --wireless
+```
+
+Two engineers, two routers, one file: the benches agree, and disagreements show up as a
+diff instead of as a bug that only reproduces on one desk.
+
+### Set up the wireless for a bench or a site
 
 Over ethernet — wireless writes are refused otherwise.
 
 ```bash
 gogl radio list                                   # interface names and what each radio accepts
-gogl wifi set --band 2.4 --ssid site-2g
-gogl wifi set --band 5   --ssid site-5g
+gogl wifi set --band 2.4 --ssid bench-2g
+gogl wifi set --band 5   --ssid bench-5g
 gogl wifi set --band 5   --passphrase             # prompts, echo off
 gogl radio set --band 5  --channel 149            # move off a congested channel
 ```
@@ -303,7 +382,7 @@ gogl clients vendor b4:0e:cf:2a:85:6f    # offline OUI lookup, no router needed
 
 ```bash
 gogl lan dns show
-gogl lan dns set --domain lab.example
+gogl lan dns set --domain bench.test
 gogl lan dns add nas 192.168.8.13
 gogl lan dns rm nas
 ```
@@ -329,17 +408,18 @@ subnet rather than writing something inert, and names the mismatch.
 The session drops when the router moves. That is inherent, not a defect: gogl treats a lost
 connection as success and prints the address to reconnect at.
 
-### Do not copy your home network's DNS servers
+### Do not copy the resolver from the network you copied the addressing from
 
-This is the trap. If your home network hands out a Pi-hole at `192.168.4.5` and you configure
-the travel router to advertise that same resolver, every client at the customer site is told
-to use a DNS server that does not exist there. It presents as "the internet is broken", not
-as "DNS is misconfigured".
+This is the trap. If the network you modelled the bench on hands out a Pi-hole at
+`192.168.4.5`, and you point the travel router at that same resolver, every client is told
+to use a DNS server that does not exist on this network. It presents as "the internet is
+broken", not as "DNS is misconfigured" — and on an isolated bench with no uplink at all, it
+presents as nothing working for reasons that look unrelated.
 
 Leave the router advertising **itself**: dnsmasq answers your reservation names locally and
 forwards everything else to whatever resolver the WAN handed it. That works in a hotel, at a
 customer site, and on a bench with no uplink. Public resolvers like `1.1.1.1` are safe too,
-since they work anywhere.
+since they work anywhere there is an uplink.
 
 gogl cannot write upstream DNS servers, so this is a warning about the admin panel rather
 than about a command.
@@ -362,7 +442,7 @@ Deliberate, and documented rather than worked around.
 | VPN, firewall, port forwarding | Out of scope |
 | Firmware 3.x | Different API entirely: REST, not JSON-RPC |
 | Generic OpenWrt | GL.iNet 4.x only, permanently. See [Scope](VISION.md#scope) |
-| Hostnames containing `_` | Not a legal DNS label character. `gofips` permits it; `gogl` rejects it rather than silently rewriting to `-`. The one case where a `gofips` file will not import unchanged |
+| Hostnames containing `_` | Not a legal DNS label character. Rejected rather than silently rewritten to `-`, so an imported file means what it says |
 | `clients` with no cached OUI data and no internet | Hard failure rather than a table of blanks that looks like every device is from an unknown vendor |
 
 One tool would close a real gap and is not built:
@@ -480,11 +560,11 @@ about itself, and it is what dnsmasq keys the lease on.
 hosts := client.Hosts()
 
 // The domain is a precondition for writing reservations.
-if err := hosts.SetDomain(ctx, "lab.example"); err != nil {
+if err := hosts.SetDomain(ctx, "bench.test"); err != nil {
     log.Fatal(err)
 }
 
-// Creates "nas" and "nas.lab.example", both resolving to the address.
+// Creates "nas" and "nas.bench.test", both resolving to the address.
 if err := hosts.Set(ctx, "nas", "192.168.8.13"); err != nil {
     log.Fatal(err)
 }
@@ -532,7 +612,7 @@ The pool is checked against the subnet first: the firmware accepts a pool outsid
 silently hands out nothing.
 
 When the subnet *does* move, expect the call to fail with a lost connection *on success* — the
-router changes address mid-request. `goglnet` treats that as expected and tells you where to
+router changes address mid-request. The CLI treats that as expected and tells you where to
 reconnect. A pool-only change has no such problem.
 
 ### Wireless
@@ -723,12 +803,6 @@ login flood aimed at a very small SoC.
   error codes, and every endpoint verified against real hardware
 - [`docs/api/`](docs/api/README.md) — full reference for all 43 groups and 313 methods,
   generated from GL.iNet's own API description
-
-## Related
-
-- [`gofi`](https://github.com/emergingrobotics/gofi) — the UniFi UDM Pro counterpart. Same
-  layout, same CLI conventions, same ISC DHCP file format. `gofips --get` output is
-  `goglps --set` input.
 
 ## License
 
