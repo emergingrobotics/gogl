@@ -1,24 +1,25 @@
 # gogl v2: one binary
 
-**Status:** specification. Phase 2 complete, phase 1 partly complete. Written 2026-07-30.
-See [Phases](#phases) for exactly what has landed.
+**Status:** phases 1 and 2 shipped. Written 2026-07-30, status revised 2026-07-30.
+Phases 3 and 4 wait on a hardware capture pass — see [Phases](#phases).
 
-Supersedes the four-utility layout for the CLI surface only. The library under `src/` keeps its
-shape; `src/services` interfaces and `src/types` are the seam this design leans on.
+This document specified the move from four binaries to one. That move is complete: the CLI
+surface it describes is what `gogl` now does, and [`gogl-guide.md`](gogl-guide.md) is the
+reference for it. The library under `src/` kept its shape throughout; `src/services`
+interfaces and `src/types` are the seam this design leaned on.
 
 ---
 
-## What changes and why
+## What changed and why
 
 **One binary, `gogl <area> <action>`.** Four binaries meant four flag parsers, four help texts,
 and four copies of the connection flags. Noun-verb is what git, docker, kubectl and gh converged
 on, and it scales to the ~35 leaf commands this surface needs.
 
-**The gofi mirror stops being a design constraint.** It existed so that knowing `gofips` meant
-knowing `goglps`. That was worth something and it has been paid; it is not worth declining a
-fourth capability or a better command tree. The ISC DHCP host-declaration format **stays**, on
-its own merits: it diffs, it reviews, it lives in git, and `gofips --get | gogl lan reservations
-import -` remains useful with no compatibility promise attached.
+**No external file-format obligation.** An earlier constraint held the command names in step
+with a sibling project's. It was dropped rather than allowed to decline a better command tree.
+The ISC DHCP host-declaration format **stays**, purely on its own merits: it diffs, it reviews,
+it lives in git, and it is readable without a tool.
 
 **Configuration moves to TOML under XDG paths**, with named routers and a password command.
 
@@ -41,41 +42,51 @@ import -` remains useful with no compatibility promise attached.
 
 ## Command tree
 
-Verified column: whether the underlying endpoint has been exercised against real hardware. It is
-the scheduling input, not a wish list.
+**Endpoint** is whether the underlying call has been exercised against real hardware —
+the scheduling input, not a wish list. **Shipped** is whether the command exists today.
+[`gogl-guide.md`](gogl-guide.md) documents every shipped flag; this table is the plan's
+own scorecard.
 
-| Command | GL.iNet |
-|---|---|
-| `gogl lan show [--guest]` | verified |
-| `gogl lan set [--guest] --ip --mask --pool-start --pool-end [--force]` | verified |
-| `gogl lan leases` | verified |
-| `gogl lan reservations list` | verified |
-| `gogl lan reservations add --name --mac --ip` | verified |
-| `gogl lan reservations rm --name\|--mac\|--ip` | verified |
-| `gogl lan reservations clear` | verified |
-| `gogl lan reservations export` | verified |
-| `gogl lan reservations import <file> [--prune] [--dry-run]` | verified |
-| `gogl lan dns show` | verified |
-| `gogl lan dns set --domain <d>` | workaround |
-| `gogl lan dns add <name> <ip>` / `rm <name>` / `clear` | verified |
-| `gogl radio list` / `show --band 5` | verified |
-| `gogl radio set --band 5 --channel --width --hwmode --power` | verified |
-| `gogl wifi list` / `show --band 5 [--guest]` | verified |
-| `gogl wifi set --band 5 [--guest] --ssid --passphrase --encryption --hidden --enabled` | verified |
-| `gogl clients list [--band 5\|--wired] [--reserved]` | verified |
-| `gogl clients vendor <mac>` | offline |
-| `gogl profile export [--with-keys]` / `import <file> [--wireless]` | verified |
-| `gogl system info` | verified |
-| `gogl system reboot` | **not captured** |
-| `gogl access check` | verified |
-| `gogl access passwd` | **not captured** |
-| `gogl access users list\|add\|rm` | **not captured** |
-| `gogl wan show` | **not captured** |
-| `gogl wan set-mode dhcp\|static\|pppoe` | **not captured** |
-| `gogl wan repeater scan\|connect` | **not captured** |
-| `gogl wan tethering show` / `wan modem show` | **not captured** |
-| `gogl config show` / `routers` / `init` | local |
-| `gogl completion bash\|zsh\|fish` | free |
+| Command | Endpoint | Shipped |
+|---|---|---|
+| `gogl lan show [--show-key]` | verified | yes |
+| `gogl lan set [--guest] --ip --mask --pool-start --pool-end [--force] [--dry-run]` | verified | yes |
+| `gogl lan leases` | verified | yes |
+| `gogl lan reservations list` | verified | yes |
+| `gogl lan reservations add --name --mac --ip` | verified | yes |
+| `gogl lan reservations rm --name\|--mac\|--ip` | verified | yes |
+| `gogl lan reservations clear` | verified | yes |
+| `gogl lan reservations export` | verified | yes |
+| `gogl lan reservations import <file> [--prune] [--force] [--dry-run]` | verified | yes |
+| `gogl lan dns show` | verified | yes |
+| `gogl lan dns set --domain <d>` | workaround | yes |
+| `gogl lan dns add <name> <ip>` / `rm <name>` / `clear` | verified | yes |
+| `gogl radio list` / `show --band 5` | verified | yes |
+| `gogl radio set --band 5 --channel --width --hwmode --power` | verified | yes |
+| `gogl wifi list` / `show --band 5 [--guest]` | verified | yes |
+| `gogl wifi set --band 5 [--guest] --ssid --passphrase --encryption --hidden --enabled` | verified | yes |
+| `gogl clients list [-w\|-e] [-r] [-a]` | verified | yes |
+| `gogl clients vendor <mac>` | offline | yes |
+| `gogl profile export [--with-keys]` / `import <file> [--wireless]` | verified | yes |
+| `gogl system info` | verified | yes |
+| `gogl config show` / `routers` / `init` | local | yes |
+| `gogl completion bash\|zsh\|fish` | free | yes |
+| `gogl system reboot` | **not captured** | no |
+| `gogl access check` | verified | no |
+| `gogl access passwd` | **not captured** | no |
+| `gogl access users list\|add\|rm` | **not captured** | no |
+| `gogl wan show` | **not captured** | no |
+| `gogl wan set-mode dhcp\|static\|pppoe` | **not captured** | no |
+| `gogl wan repeater scan\|connect` | **not captured** | no |
+| `gogl wan tethering show` / `wan modem show` | **not captured** | no |
+
+Two departures from the plan as written, both settled by implementation:
+
+- **`--guest` is on `lan set`, not `lan show`.** The report already names every interface it
+  finds, so a flag to select one had nothing to do.
+- **`clients list` filters by link type, not by band** — `-w/--wifi` and `-e/--wired`, plus
+  `-r/--reserved` and `-a/--all`. A band filter implied the client list carried a band per
+  station; it does not.
 
 `lan reservations` accepts `res` as an alias, since four words before an argument is a lot.
 
@@ -159,7 +170,7 @@ output  = "text"            # or "json"
 
 [routers.player-test]
 host             = "192.168.8.1"
-domain           = "herlein.me"
+domain           = "bench.test"
 password_command = "pass show routers/player-test"
 
 [routers.lab]
@@ -168,10 +179,12 @@ host = "192.168.4.1"
 
 `gogl --router lab lan show`, or omit `--router` for the default.
 
-**Password resolution, highest wins:** `--password-command` flag, `GL_PASSWORD` env,
-`password_command` in TOML, interactive prompt without echo. Never a `--password` flag: a secret
-on argv is visible in `ps` and lands in shell history, which is the rule this project already
-holds for the router password and violated for `--set-key`.
+**Password resolution, highest wins:** `GL_PASSWORD` env, `password_command` in TOML,
+interactive prompt without echo. Never a `--password` flag: a secret on argv is visible in `ps`
+and lands in shell history. As shipped there is no `--password-command` flag either — the
+router password comes only from those three sources, and the flag was dropped as a fourth way
+to say what the TOML already says. (WiFi passphrases *do* have `--passphrase-command`, because
+they are per-write rather than per-router.)
 
 `password_command` executes a command named in a file the user owns at `0600` — the same trust
 model as `git`'s `credential.helper` and `restic`'s `--password-command`.
@@ -184,9 +197,10 @@ model as `git`'s `credential.helper` and `restic`'s `--password-command`.
 | OUI cache | `${XDG_CACHE_HOME:-~/.cache}/gogl/oui.txt` |
 | Install | `~/.local/bin/gogl` |
 
-The OUI database currently sits under `XDG_DATA_HOME`, which is wrong — it is a re-downloadable
-cache, not user data. Install currently targets `~/bin`; `~/.local/bin` is on `PATH` by default
-via systemd and Debian's `.profile`.
+Both moved as specified. The OUI database had been under `XDG_DATA_HOME`, which was wrong — it
+is a re-downloadable cache, not user data. Install had targeted `~/bin`; `~/.local/bin` is on
+`PATH` by default via systemd and Debian's `.profile`, and `make uninstall` still clears the
+legacy location so a stale copy cannot shadow a fresh build.
 
 ### Global flags
 
@@ -207,8 +221,9 @@ command. Never a bare `--passphrase <value>`.
 Named `--passphrase` rather than `--password` so that `gogl access passwd` — the router's own
 password — cannot be confused with a WiFi key.
 
-This is a fix, not a new rule: `goglnet --set-key 'value'` put a WiFi passphrase in argv and in
-shell history, contradicting the reason `GL_PASSWORD` was never given a flag.
+This was a fix, not a new rule: the v1 wireless utility's `--set-key 'value'` put a WiFi
+passphrase in argv and in shell history, contradicting the reason `GL_PASSWORD` was never given
+a flag. Passing a value to `--passphrase` is now an error rather than being silently accepted.
 
 ---
 
@@ -223,12 +238,12 @@ their shapes.
 -- which is the sweeping-rename shape that has already corrupted files in this project once.
 Separate packages keep every namespace intact and need no renames at all.
 
-| Was | Is | Exported entry points |
-|---|---|
-| `utilities/goglps` | `utilities/internal/reservations` | `Get`, `Set`, `Add`, `Del`, `Clear`, `SetDomain`, `ParseHosts`, `FormatHosts`, `Modes` |
-| `utilities/goglnet` | `utilities/internal/netcfg` | `Show`, `BuildReport`, `FormatText`, `FormatJSON`, `FormatWireless`, `SetNetwork`, `SetWireless`, `SetSSID`, `NetworkModes`, `WirelessModes` |
-| `utilities/goglmac` | `utilities/internal/clients` | `List`, `BuildEntries`, `FormatText`, `FormatJSON`, `FilterFor`, `LoadOUI`, `ParseOUI` |
-| `utilities/goglcfg` | `utilities/internal/profile` | `Capture`, `Apply`, `ReadProfile`, `Profile`, `CaptureOptions`, `ApplyModes` |
+| Was (v1 binary) | Is | Exported entry points |
+|---|---|---|
+| reservations utility | `utilities/internal/reservations` | `Get`, `Set`, `Add`, `Del`, `Clear`, `SetDomain`, `ParseHosts`, `FormatHosts`, `Modes` |
+| network utility | `utilities/internal/netcfg` | `Show`, `BuildReport`, `FormatText`, `FormatJSON`, `FormatWireless`, `SetNetwork`, `SetWireless`, `SetSSID`, `NetworkModes`, `WirelessModes` |
+| clients utility | `utilities/internal/clients` | `List`, `BuildEntries`, `FormatText`, `FormatJSON`, `FilterFor`, `LoadOUI`, `ParseOUI` |
+| profile utility | `utilities/internal/profile` | `Capture`, `Apply`, `ReadProfile`, `Profile`, `CaptureOptions`, `ApplyModes` |
 
 Two compositions were extracted from the deleted `main.go` files rather than dissolved into the
 command layer, so their ordering stays covered by the package's own tests: `netcfg.Show` (report
@@ -239,31 +254,32 @@ Two things were deleted rather than carried forward. `checkModes` and its test e
 one mode selected", which a subcommand tree makes structurally impossible to violate. And
 `reservations.Modes` lost its `Get`/`Set`/`Add`/`Del`/`Clear` booleans for the same reason.
 
-`netcfg.optionalBool`, `optionalInt` and `optionalString` remain and are still tested, but pflag's
-`Changed()` answers the set-versus-unset question natively, so they are expected to go when the
-command tree lands.
+`netcfg.optionalBool`, `optionalInt` and `optionalString` are **gone**, as anticipated: pflag's
+`Changed()` answers the set-versus-unset question natively, so the command tree made them
+redundant.
 
-This keeps 527 tests alive across the move.
+The move kept the whole test suite alive; it now stands at 549 test functions and `make test`
+is clean under `-race`.
 
-**The four binaries keep working until the last area is ported**, then go in one commit with a
-`make uninstall` for the stale copies in `~/bin`.
+**The four binaries were retired in one commit** once the last area was ported, with a
+`make uninstall` that also clears the stale copies in `~/bin`.
 
 ### Phases
 
-1. **Command tree over verified endpoints.** `lan`, `radio`, `wifi`, `clients`, `profile`,
-   `system info`, `config`.
-   - **Done:** the four utilities extracted to importable packages, tests intact.
-   - **Remaining:** `utilities/gogl` — the cobra tree wiring those packages.
-2. **Done:** TOML config with named routers and `password_command`, XDG paths, install to
+1. **Shipped.** Command tree over verified endpoints: `lan`, `radio`, `wifi`, `clients`,
+   `profile`, `system info`, `config`. The four utilities became importable packages with
+   tests intact, and `utilities/gogl` is the cobra tree wiring them together.
+2. **Shipped.** TOML config with named routers and `password_command`, XDG paths, install to
    `~/.local/bin`, `make uninstall`, `--version`, `make check-docs`.
-3. **Capture pass** on the SFT1200 for `wan`, `access` and `system reboot`, with
+3. **Not started.** Capture pass on the SFT1200 for `wan`, `access` and `system reboot`, with
    `discovery/shape`. See [`../TODO.md`](../TODO.md).
-4. **`wan` and `access`**, written from those captures rather than from GL.iNet's descriptions.
+4. **Not started.** `wan` and `access`, written from those captures rather than from GL.iNet's
+   descriptions.
 
-Phase 1's remainder and phase 2 need no hardware. Nothing in 3 or 4 gets written before the
-capture exists, because building from the vendor description has been wrong three times: `dhcp.*`
-does not exist, `dns.set_host` rejects `(`, `)` and `=`, and `htmodes` is an object rather than
-an array.
+Phases 1 and 2 needed no hardware, which is why they went first. Nothing in 3 or 4 gets written
+before the capture exists, because building from the vendor description has been wrong three
+times: `dhcp.*` does not exist, `dns.set_host` rejects `(`, `)` and `=`, and `htmodes` is an
+object rather than an array.
 
 The former phases 4 and 5 — a `backend/openwrt` implementation, and moving GL.iNet wire types out
 of `src/types` — are **cancelled** with the portability goal.
@@ -273,11 +289,10 @@ of `src/types` — are **cancelled** with the portability goal.
 - **`wan` shape.** Whether it stays one area, and how `repeater`, `tethering` and `modem` sit
   under it. Cannot be settled before the capture. No longer complicated by "how do
   vendor-specific commands fit a portable tool", since every command here is vendor-specific.
-- **`netcfg`'s `optionalBool`/`optionalInt`/`optionalString`.** Still tested, but pflag's
-  `Changed()` answers set-versus-unset natively. Expected to go when the command tree lands.
 
 Settled by the GL.iNet-only decision: the name stays `gogl`, the logo stays, and there is no
-convention needed for vendor-specific commands.
+convention needed for vendor-specific commands. Settled by implementation: `netcfg`'s
+`optional*` helpers are gone.
 
 ## Related
 

@@ -21,8 +21,8 @@ POST http://192.168.8.1/rpc
 Content-Type: application/json
 ```
 
-Plain **HTTP on port 80** by default. Not 443 — a habit carried over from a UniFi UDM Pro
-fails here.
+Plain **HTTP on port 80** by default. Not 443 — assuming the usual HTTPS admin port fails
+here.
 
 ---
 
@@ -298,8 +298,8 @@ and `guest`.
 **Passphrases come back in cleartext**, here and in `system.get_status`, over plain HTTP on port
 80. Reading them requires LAN access and the admin password, which is the same bar as opening
 the admin panel, so this is recorded rather than treated as a defect. `gogl` masks keys in
-`goglnet` output unless `--show-key` is given, which keeps them out of terminal scrollback and
-pasted bug reports; it is not an access control.
+`gogl lan show` and `gogl wifi show` output unless `--show-key` is given, which keeps them out
+of terminal scrollback and pasted bug reports; it is not an access control.
 
 Each radio also advertises what it supports. **Three of these fields disagree with GL.iNet's own
 description, captured 2026-07-29:**
@@ -484,6 +484,12 @@ server-rendered CBI form posting `cbid.dhcp.<sid>.domain=...` with a CSRF token.
 `system.get_config`, `lan.get_config`, `network.get_config`, `network.get_status`,
 `firewall.get_config`, `firewall.get_status` all return `-32601 Method not found`. The
 description covers the whole firmware line; the SFT1200 is a reduced build.
+
+These six came from GL.iNet's original public reference and do **not** appear in the API
+description that [`docs/api/`](docs/api/README.md) is generated from, so they have no entry
+there to mark. Three further absences *are* in that description and are marked in it:
+`custom_dns.get_info`, `custom_dns.set_info` and `modem.get_config`. Nine known absences in
+total.
 
 ### Not reachable at all
 

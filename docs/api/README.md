@@ -24,8 +24,14 @@ python3 scripts/generate-api-docs.py /tmp/gl-api-description.json
 
 The description is GL.iNet's documentation for the firmware line as a whole, not
 for any one device. 23 endpoints were confirmed by calling them
-against a **GL-SFT1200 (Opal) running firmware 4.3.28**, and several documented
-endpoints are absent on it. Each method below is marked accordingly.
+against a **GL-SFT1200 (Opal) running firmware 4.3.28**. Each method below is
+marked verified, absent or untested.
+
+Three methods in this reference are absent on that device: `custom_dns.get_info`,
+`custom_dns.set_info` and `modem.get_config`. Six more absences are known but have
+no entry here, because they come from GL.iNet's original public reference rather
+than from this description -- see
+[`../../GL_INET_4X_API_DOCUMENTATION.md`](../../GL_INET_4X_API_DOCUMENTATION.md).
 
 Two payloads differ from the documentation on real hardware:
 

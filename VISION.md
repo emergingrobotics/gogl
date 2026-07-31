@@ -3,15 +3,15 @@
 A Go module for programmatic control of GL.iNet travel routers running firmware 4.x,
 targeting the **GL-SFT1200 (Opal)**.
 
-`gogl` is the travel-router counterpart to
-[`gofi`](https://github.com/emergingrobotics/gofi). It exposes the same shape of API and
-the same command-line ergonomics, so that a network described on a UniFi UDM Pro can be
-reproduced on a pocket router. Dump the fixed-IP assignments from a UniFi site with
-`gofips`, hand the file to `gogl lan reservations`, and the travel router hands out the same addresses to
-the same MAC addresses.
+The purpose is to make a travel router's whole network **reproducible from a file** rather
+than from an hour of clicking through the admin panel. That matters most when the router is
+serving as an isolated test network for development or testing: the addressing your devices
+and test harness depend on becomes something you commit, review and re-apply, on this router
+or on a second one.
 
-Addresses, not names: a reservation on this firmware does not create a DNS record. See
-[The Reservation Model](#the-reservation-model).
+Addresses and names come from two different mechanisms: a reservation on this firmware does
+not create a DNS record, so names are written separately into the router's host file. The CLI
+writes both from one declaration. See [The Reservation Model](#the-reservation-model).
 
 ## Target Device
 
@@ -30,9 +30,12 @@ Firmware 4.x is a hard requirement. GL.iNet replaced the older REST API with JSO
 firmware 4.0, and `gogl` speaks only JSON-RPC. Firmware 3.x devices are out of scope.
 
 Other GL.iNet 4.x models should work, since the API is shared across the firmware line, but
-the SFT1200 is the only device this module is tested against — and it is a **reduced build**:
-six endpoints GL.iNet documents are absent on it. See [`docs/api/`](docs/api/README.md),
-where every method is marked verified, absent, or untested.
+the SFT1200 is the only device this module is tested against — and it is a **reduced build**.
+Nine documented endpoints are absent on it. Three appear in
+[`docs/api/`](docs/api/README.md), where every method is marked verified, absent or untested;
+the other six are documented only in GL.iNet's original public reference, which is no longer
+reachable, and are recorded in
+[`GL_INET_4X_API_DOCUMENTATION.md`](GL_INET_4X_API_DOCUMENTATION.md).
 
 ## Project Resources
 
@@ -55,10 +58,10 @@ where every method is marked verified, absent, or untested.
    suite. **Never build a command string from user-supplied data.** Anything the API cannot
    express is a documented gap, never a shell workaround.
 
-   This rule was inherited from `gofi`, where it read "no SSH, no UCI, no shell", and the
-   justification originally written for it here -- that SSH and shell are unmockable -- was
-   false. `uci show` is text in and text out, easier to mock than the HTTP server this project
-   already mocks. The rule is kept for the two reasons that actually hold.
+   This rule originally read "no SSH, no UCI, no shell", and the justification first written
+   for it -- that SSH and shell are unmockable -- was false. `uci show` is text in and text
+   out, easier to mock than the HTTP server this project already mocks. The rule is kept for
+   the two reasons that actually hold.
 
    A structured API is a capability boundary: it can set a DHCP pool and cannot delete `/etc`,
    which bounds the blast radius of a bug in a tool built for unattended provisioning. And it
@@ -112,12 +115,11 @@ The practical consequences, all of them simplifications:
 
 Explicitly **out of scope for v1**:
 
-- **Nothing in the wireless stack.** Radio tuning was excluded on the grounds that it is
-  tuning rather than provisioning; that was wrong for a travel router, where the channel a
-  site's existing WiFi occupies is exactly the thing you need to move off.
 - **VLANs.** The Opal exposes no VLAN configuration through its API.
-- **Guest network writes.** Reported by `gogl lan show` for address planning; `lan.set_config` can
-  address it, but v1 only ever writes the main LAN.
+- **WAN configuration and device access control.** `netmode`, `cable`, `repeater`,
+  `tethering`, `modem` and `acl` have no endpoint this project has exercised against hardware.
+  Designed but not built; see [`TODO.md`](TODO.md).
+- **Lease time and upstream DNS servers.** Readable, with no verified write endpoint.
 - **VPN, firewall, port forwarding, traffic rules.**
 - **dnsmasq's own `domain` / `local` / `expandhosts` settings.** No endpoint exposes them and
   `/ubus` is unavailable. gogl writes fully-qualified names into the host file instead, which
@@ -280,10 +282,9 @@ unless asked for it, because a passphrase on a terminal is a passphrase in a scr
 
 ## Profiles
 
-`gogl profile` captures the writable sections as a JSON profile and applies one back. It is the
-fourth utility and has no `gofi` counterpart: the work spans `gogl lan reservations`, `gogl lan show` and `gogl clients list`
-and belongs in none of them. The three-tool mirror exists so that knowing one set means knowing
-the other, not as a cap on what the project may contain.
+`gogl profile` captures the writable sections as a JSON profile and applies one back. It is its
+own area because the work spans `lan`, `lan reservations`, `lan dns`, `wifi` and `radio` and
+belongs in none of them.
 
 ### A profile is a network, not a router
 
@@ -300,8 +301,8 @@ firewall, VPN and VLANs are absent for that reason, not because they were forgot
 
 ### Passphrases are omitted unless asked for
 
-A profile is a file people commit. `--get` writes no WiFi keys; `--get --with-keys` includes
-them in cleartext.
+A profile is a file people commit. `gogl profile export` writes no WiFi keys;
+`gogl profile export --with-keys` includes them in cleartext.
 
 An omitted key is not an empty key. On apply, a missing key is not written at all, leaving
 whatever the target already has -- so the private default is also the safe one. This depends on
@@ -350,7 +351,8 @@ The module path is `github.com/emergingrobotics/gogl`; the library source lives 
 `src/`, so the root package is imported as `github.com/emergingrobotics/gogl/src`
 (package name is `gogl`). `examples/` and `utilities/` remain at the repo top level.
 
-This mirrors `gofi`'s layout deliberately, so the two modules read side by side.
+Keeping the library under `src/` rather than at the root leaves `examples/` and `utilities/`
+as peers of it, so a reader sees the three surfaces — library, consumers, CLI — at one level.
 
 ```
 gogl/
@@ -375,16 +377,17 @@ gogl/
 └── utilities/         # gogl/ (cobra tree) and internal/ (its packages)
 ```
 
-### Differences from gofi's service layer
+### What the service layer does and does not have
 
-- **No site concept.** GL.iNet routers have no equivalent of a UniFi site. Every `site`
-  parameter present in `gofi`'s method signatures is absent here.
-- **No DNS service at all.** Not because a reservation doubles as one — it does not, see
-  [The Reservation Model](#the-reservation-model) — but because the firmware exposes no way to
-  set a per-host DNS record. `gofi` needs `Users()` and `DNS()` kept in sync; `gogl` has
-  neither to offer.
+- **No site concept.** A GL.iNet router has nothing equivalent to a controller managing many
+  sites, so no method takes a `site` parameter.
+- **A separate `Hosts()` service, not DNS-via-reservations.** A reservation does not create a
+  DNS record on this firmware — see [The Reservation Model](#the-reservation-model) — so names
+  live in their own service over the router's host file. `Reservations()` and `Hosts()` are two
+  services precisely because the firmware stores the two things separately; the CLI writes both
+  from one declaration so callers do not have to.
 - **No device service.** The router is the only device. `System()` reports it.
-- **No WebSocket.** Firmware 4.x has no event stream equivalent to UniFi's.
+- **No event stream.** Firmware 4.x exposes no WebSocket or push channel; every read is a poll.
 
 ## Key Technical Details
 
@@ -395,12 +398,13 @@ gogl/
 - **Session**: A `sid` returned by `login`, passed as the first element of every
   subsequent call's `params` array.
 - **Scheme**: GL.iNet routers serve the admin interface over **HTTP on port 80** by
-  default, unlike the UDM Pro's HTTPS on 443. So `gogl` defaults to HTTP port 80 and
+  default, rather than HTTPS on 443. So `gogl` defaults to HTTP port 80 and
   requires `--https` to use TLS.
-- **TLS**: Where HTTPS is available it uses a self-signed certificate, so under `--https`
-  certificate verification is **off by default** and enabled with `--secure`/`-k`. This
-  matches `gofi`'s inverted `-k` semantics. Without `--https`, `-k` has no effect and
-  passing it is an error rather than a silent no-op.
+- **TLS**: Where HTTPS is available it uses a self-signed certificate, so the CLI's
+  `--insecure` defaults to **true** — a tool that cannot reach the device out of the box is
+  useless. The **library** inverts this: `Config`'s zero value verifies certificates, because
+  a library that is insecure at its zero value is a hazard. `InsecureSkipVerify` must be set
+  deliberately.
 
 ### Authentication Flow
 
@@ -534,13 +538,18 @@ announced about itself. So:
 
 ### Consequences for this project
 
-- **gogl reproduces addresses, not names.** That is the honest scope.
-- **A reservation's Name is a label.** It identifies the entry in the admin panel and keys it
-  in an exported host file, which is genuinely useful — but nothing resolves it.
-- **`--keep-dns` still has no analogue**, for a duller reason than originally argued: there is
-  no DNS record to keep.
-- **Drift is still impossible**, but trivially so. `gofips` must keep a UniFi user record and
-  a separate DNS record consistent; gogl writes one object that has no DNS half.
+- **gogl reproduces both addresses and names, through two mechanisms.** Addresses come from
+  static binds; names come from the router's host file via `dns.get_host` / `dns.set_host`.
+  An earlier version of this document scoped the project to addresses only, on the belief that
+  the firmware offered no way to write a name. It does, and `Hosts()` is that way.
+- **A reservation's Name is only a label.** It identifies the entry in the admin panel and keys
+  it in an exported host file, which is genuinely useful — but nothing resolves it. The
+  resolvable name is a separate write.
+- **The two can drift, so the CLI writes both.** One host declaration becomes a static bind and
+  a host-file entry, and `import` diffs the two independently so a binding whose name went
+  missing is repaired rather than skipped.
+- **Keeping a name while dropping its binding is expressible, and refused.** A name resolving
+  to an address the router no longer reserves is a trap. `rm` and `clear` remove both.
 - **Names often work anyway, and that is not gogl's doing.** Most devices announce a sensible
   hostname over DHCP, so `nas.lan` frequently resolves. gogl neither causes that nor can
   arrange it for a device that stays silent.
@@ -563,20 +572,26 @@ Validation rejects rather than escapes:
 
 This lives in the library, not the CLI, so no consumer can bypass it.
 
-**This is deliberately stricter than `gofips`**, which accepts `_`. A host file containing
+**Note that `_` is rejected**, though some DHCP tooling permits it. A host file containing
 `my_server` is **rejected** with the offending character named, rather than silently rewritten
-to `my-server`. It is the one case where a `gofips` file may not import unchanged, and
-renaming is a decision about what your hosts are called — not one to make silently.
+to `my-server`. Renaming is a decision about what your hosts are called — not one to make
+silently on the operator's behalf.
 
 ## Type Patterns
 
-GL.iNet's JSON-RPC responses are well-typed, unlike UniFi's. `gofi`'s `FlexInt` and
-`FlexBool` workarounds are deliberately **not** ported. Add them only if a recorded
-fixture proves they are needed.
+The original rule here was that permissive "decodes from either shape" types get added only
+when a recorded fixture proves the need. **A fixture has since proved it**, so `src/types`
+carries `FlexString`: `clients.online_time` is documented as a string and firmware 4.3.28
+sends a number, which made every `clients.get_list` decode fail. `IntBool` exists for the
+same class of reason — the firmware sends `enable: 1`, not `true`.
 
-One conversion is genuinely required. UniFi expresses `dhcpd_leasetime` as an integer
-number of seconds (`86400`); dnsmasq expresses lease time as a duration string (`12h`,
-`1d`) or bare seconds. A `LeaseTime` type handles both directions:
+The rule stands as written; it simply turned out to be satisfiable. Do not add a new flexible
+type on the strength of GL.iNet's API description alone, which has now been wrong four
+separate times in ways only hardware revealed.
+
+One conversion is required in the other direction. dnsmasq expresses lease time as a duration
+string (`12h`, `1d`) or as bare seconds, while callers want a `time.Duration`. A `LeaseTime`
+type handles both directions:
 
 ```go
 // LeaseTime is a DHCP lease duration. It unmarshals from a dnsmasq duration
@@ -602,15 +617,17 @@ The mock server must:
 - Support error scenarios: bad password, expired nonce, expired session, malformed
   request, and JSON-RPC error objects.
 
-## Replicating a gofi Network
+## Reproducing a Network From a File
 
-This is the reason `gogl` exists. The workflow takes a network as configured on a UniFi
-UDM Pro and reproduces its addressing and naming on a travel router.
+This is the reason `gogl` exists: a travel router's addressing and naming should come from a
+file you commit, not from an hour in the admin panel. The primary case is a bench — an
+isolated network for development or testing, where the addresses are the contract between the
+devices under test and the harness that drives them.
 
 ### The Interchange Format Is the ISC DHCP File
 
-No new format is introduced. `gofips --get` already emits exactly the three fields an Opal
-reservation needs, keyed by hostname:
+Reservations exchange as ISC DHCP host declarations, which carry exactly the three fields an
+Opal reservation needs, keyed by hostname:
 
 ```
 host myserver {
@@ -619,116 +636,121 @@ host myserver {
 }
 ```
 
-`gogl lan reservations` parses and emits the identical format with identical rules, so files move between
-the UniFi controller and the travel router with no conversion step. The format is
-diffable, version-controllable, and hand-editable, which is the whole argument for it.
+`gogl lan reservations export` emits this and `import` parses it, under identical rules, so a
+round trip is lossless. The format is diffable, version-controllable and hand-editable, which
+is the whole argument for it — a bench description belongs in the repo whose tests depend on
+those addresses.
 
-One caveat: `gogl lan reservations` validates hostnames more strictly than `gofips` does, so a file
-containing a name that is legal on UniFi but not a legal DNS label is rejected rather than
-converted.
-See [Name Validation](#name-validation).
+Hostnames get strict DNS-label validation, so a name that is not a legal label is rejected
+rather than silently converted. See [Name Validation](#name-validation).
+
+For a whole network rather than just its addressing, `gogl profile export` captures the LAN,
+pool, reservations, names, domain, wireless identity and radio tuning as one JSON file. See
+[Profiles](#profiles).
 
 ### End-to-End Workflow
 
-Two commands. This example assumes a home network of `192.168.4.0/24` behind a UDM Pro at
-`192.168.4.1`, and a travel router whose LAN address has already been set to
-`192.168.4.1/24` by hand. That last part is a prerequisite; see
-[The Router's Own Configuration](#the-routers-own-configuration).
+This example targets a bench on `192.168.4.0/24`.
 
 ```bash
-# On the UniFi side, at home:
-gofips -H 192.168.4.1 -k --get > home.hosts
+# Capture, once, from a router configured the way you want it:
+gogl lan reservations export > bench.hosts
+git add bench.hosts && git commit -m "capture bench addressing"
 
-# Later, against the travel router:
-gogl -H 192.168.4.1 lan reservations import home.hosts
+# Rebuild, any time:
+gogl lan dns set --domain bench.test
+gogl lan set --ip 192.168.4.1 --mask 255.255.255.0 \
+             --pool-start 192.168.4.100 --pool-end 192.168.4.149
+# the router moves; reconnect at the new address
+gogl -H 192.168.4.1 lan reservations import bench.hosts
 ```
 
-The two `-H 192.168.4.1` values refer to different devices on different occasions: the UDM
-Pro while you are at home taking the dump, and the travel router later. They coincide
-because the travel router is standing in for the UDM's LAN address, which is the entire
-point. Do not run both halves with both devices on the same segment.
+Use `gogl lan show` beforehand to confirm the subnet and pool, and
+`gogl lan reservations import --dry-run` to see exactly what would change before it changes.
 
-Use `gogl lan show` beforehand to confirm the router's subnet and pool, and `gogl lan reservations import
---dry-run` to see exactly what would change before it changes.
+The result is a router that hands out the same addresses to the same MAC addresses and
+answers the same names, every time it is rebuilt.
 
-The result is a travel router that hands out the same addresses to the same MAC addresses
-and answers the same names as the network it was copied from. Plug it into hotel ethernet,
-and devices that expect `myserver` at `192.168.4.10` find it there.
+### What a Host Declaration Becomes
 
-### What Crosses Over
-
-| From the UniFi dump | On the travel router |
+| In the file | On the router |
 |---------------------|----------------------|
 | Each `host {}` block, address | One static bind: a MAC-to-IP binding |
 | Each `host {}` block, hostname | One host-file entry, answering both bare and qualified |
 
-Each host declaration therefore becomes **two** writes, to two independent tables that the
-firmware does not join for you. `gogl lan reservations` performs both and reports them as one row, which is
+Each declaration therefore becomes **two** writes, to two independent tables the firmware does
+not join for you. `gogl lan reservations` performs both and reports them as one row, which is
 the honest presentation: they are one intent, and either can be present without the other.
 
-Nothing else crosses over, because `gofips --get` emits host declarations and nothing else.
-The network's *shape* — subnet and pool boundaries — is not in the file, so you either set it
-with `gogl lan set` and `gogl radio set` or in the admin panel. Lease time and upstream DNS servers stay
-whatever the router has; see the warning below for why you want that for DNS in particular.
+The network's *shape* — subnet and pool boundaries — is not in a host file, so set it with
+`gogl lan set`, or capture the whole thing in a profile instead. Lease time and upstream DNS
+servers stay whatever the router has; see the warning below for why that is what you want.
 
 ### The Router's Own Configuration
 
-`gogl lan show` reports the subnet, pool, and lease time, and writes the first two with
-`--set-ip`, `--set-mask`, `--set-start`, and `--set-end`. Lease time and upstream DNS
-servers are read-only: no endpoint on this firmware sets them.
+`gogl lan show` reports the subnet, pool and lease time. `gogl lan set` writes the first two,
+via `--ip`, `--mask`, `--pool-start` and `--pool-end`. Lease time and upstream DNS servers are
+read-only: no endpoint on this firmware sets them.
 
 Two things to get right, because both cause failures that are hard to read from the symptom:
 
-**Match the subnet to the network you are standing in for.** A reservation at
-`192.168.4.10` is meaningless on a router whose LAN is `192.168.8.0/24`. Set the LAN address
-first, either with `gogl lan set --ip 192.168.4.1 --mask 255.255.255.0 --pool-start ...
---set-end ...` or in the admin panel under LAN → Router IP Address. The management session
-drops when the router moves, and you reconnect at the new address; `gogl lan show` treats a
-connection loss after the request as success, because that is what a successful renumber
-looks like from this end.
+**Match the subnet to the addressing you intend to load.** A reservation at `192.168.4.10` is
+meaningless on a router whose LAN is `192.168.8.0/24`. Set the LAN address first, with
+`gogl lan set --ip 192.168.4.1 --mask 255.255.255.0 --pool-start ... --pool-end ...` or in the
+admin panel under LAN → Router IP Address. The management session drops when the router moves,
+and you reconnect at the new address; gogl treats a connection loss after the request as
+success, because that is what a successful renumber looks like from this end.
 
-`gogl lan show` refuses the change while any reservation exists, and `gogl lan reservations` refuses any
-reservation outside the current subnet rather than writing something inert. Between them there
-is no order of operations that leaves a reservation stranded, and neither failure is silent.
+`gogl lan set` refuses the change while any reservation exists unless forced, and
+`gogl lan reservations import` refuses any address outside the current subnet rather than
+writing something inert. Between them there is no order of operations that leaves a
+reservation stranded, and neither failure is silent.
 
-**Do not copy your home network's DNS servers.** This is the trap. If your home network
-hands out a Pi-hole at `192.168.4.5`, and you configure the travel router to advertise that
-same resolver, then every client at the customer site is told to use a DNS server that does
-not exist there. It presents as "the internet is broken," not as "DNS is misconfigured."
-Leave the router advertising **itself**: dnsmasq answers your reservation names locally and
-forwards everything else to whatever resolver the WAN handed it. That works in a hotel, at
-a customer site, and on a bench with no uplink at all. Public resolvers like `1.1.1.1` are
-safe to set if you want them, since they work anywhere.
+**Do not carry over the resolver from the network you modelled the bench on.** This is the
+trap. If that network hands out a Pi-hole at `192.168.4.5`, and you point this router at the
+same resolver, every client is told to use a DNS server that does not exist here. It presents
+as "the internet is broken," not as "DNS is misconfigured" — and on an isolated bench with no
+uplink, as nothing working for reasons that look unrelated. Leave the router advertising
+**itself**: dnsmasq answers your reservation names locally and forwards everything else to
+whatever resolver the WAN handed it. That works in a hotel, at a customer site, and on a bench
+with no uplink at all. Public resolvers like `1.1.1.1` are safe to set if you want them.
 
 ### Future Work
 
-- **`goglrenumber`** - rewrite the network part of every address in an ISC DHCP file to a
-  target subnet, preserving host parts, emitting a new file rather than editing in place. A
-  pure text transformation with no device access, which makes it cheap to build and easy to
-  trust. This is the alternative to re-IPing the router: instead of moving the router to
+- **`gogl lan reservations renumber`** - rewrite the network part of every address in an ISC
+  DHCP file to a target subnet, preserving host parts, emitting a new file rather than editing
+  in place. A pure text transformation with no device access, which makes it cheap to build and
+  easy to trust. This is the alternative to re-IPing the router: instead of moving the router to
   the file's subnet, move the file to the router's.
-Renumbering the router is no longer future work: `gogl lan set` and `gogl radio set` does it. It stayed out of
-`gogl lan reservations` deliberately, so that losing contact with the device is never a side effect of
-importing a host file.
 
-`goglrenumber` is not in v1.
+Renumbering the router itself is no longer future work — `gogl lan set` does it. It stayed out
+of the reservations commands deliberately, so that losing contact with the device is never a
+side effect of importing a host file.
+
+`renumber` is not built.
 
 ## Common CLI Conventions
 
-All utilities share these.
-
 ### Connection Flags
+
+Global, on every command.
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--host` | `-H` | `$GL_ROUTER_IP` | Router host address |
 | `--port` | `-p` | `80` | Router port |
 | `--https` | n/a | `false` | Use HTTPS instead of HTTP |
-| `--secure` | `-k` | `false` | Under `--https`, enforce TLS certificate verification (default: accept self-signed) |
+| `--insecure` | n/a | `true` | Skip TLS certificate verification; these devices ship self-signed certificates |
+| `--router` | n/a | the config's `default` | Named router from the config file |
+| `--output` | n/a | `text` | `text` or `json` |
 
 The port default is 80, not 443, because that is what GL.iNet firmware serves. Passing
-`--https` without changing `--port` is almost certainly wrong; the tools warn when
-`--https` is combined with port 80. Passing `-k` without `--https` is an error.
+`--https` without changing `--port` is almost certainly wrong, and warns. Passing
+`--insecure=false` without `--https` is an error: over plain HTTP there is no certificate to
+verify, so the flag could only mislead.
+
+`--insecure` defaulting to true is a CLI-only choice; the library's `Config` zero value
+verifies. See [Key Technical Details](#key-technical-details).
 
 There is no `--site` flag. GL.iNet routers have no sites.
 
@@ -751,11 +773,11 @@ There is no `--site` flag. GL.iNet routers have no sites.
 One binary, `gogl <area> <action>`. Nine areas; eight act on the router and `config` acts on
 the operator's machine.
 
-This replaced four binaries -- `gogl lan reservations`, `gogl lan show`, `gogl clients list`, `gogl profile` -- which mirrored
-`gofi`'s three one-for-one plus a fourth. That mirror existed so that knowing one set meant
-knowing the other. It was worth something and it has been paid; it is not worth declining a
-better command tree. **The mirror is no longer a design constraint.** The ISC DHCP
-host-declaration format stays, on its own merits.
+This replaced four separate binaries — one each for reservations, the network report, the
+client list and profiles — whose names were held in step with an external project's. That
+naming constraint was dropped rather than allowed to decline a better command tree; four
+binaries also meant four flag parsers, four help texts and four copies of the connection
+flags. The ISC DHCP host-declaration format stays, on its own merits.
 
 The complete reference -- every area, subcommand and flag -- is
 [`docs/gogl-guide.md`](docs/gogl-guide.md). What follows is the specification: the rules the
@@ -843,9 +865,9 @@ WiFi passphrases follow the same rule. `--passphrase` takes **no value** and pro
 not a silent ignore -- the value is already in the operator's history by then, and saying so
 is the only useful response.
 
-This rule was violated once, by the former `goglnet --set-key 'value'`, in the same binary
-that enforced it for the router password. The lesson recorded: a rule stated in one place and
-not enforced in the adjacent one is not a rule.
+This rule was violated once, by the v1 wireless utility's `--set-key 'value'`, in the same
+binary that enforced it for the router password. The lesson recorded: a rule stated in one
+place and not enforced in the adjacent one is not a rule.
 
 ### Configuration file
 
@@ -892,9 +914,10 @@ make api-docs    # Regenerate docs/api/ from GL.iNet's API description
 
 `UTILITIES := gogl`
 
-One binary. It was four -- `gogl clients list`, `gogl lan show`, `gogl lan reservations`, `gogl profile` -- mirroring `gofi`'s
-three plus one. Their logic became importable packages under `utilities/internal/` so the
-tests survived the move; `utilities/gogl` is flag wiring over those packages.
+One binary. It was four — one each for the client list, the network report, reservations and
+profiles. Their logic became importable packages under `utilities/internal/` so the tests
+survived the move; `utilities/gogl` is flag wiring over those packages and holds no logic of
+its own.
 
 `make hil-test` is deliberately outside `make test`. The latter runs against a mock with no
 hardware, and mixing the two would make a green suite mean two different things.
@@ -904,10 +927,6 @@ hardware, and mixing the two would make a green suite mean two different things.
 Study these for patterns. None is authoritative; the recorded fixtures from a live
 SFT1200 are.
 
-- `github.com/emergingrobotics/gofi` - the counterpart module (imported as
-  `github.com/unifi-go/gofi`; the repository path and the module path differ). Layout,
-  service interface style, CLI conventions, and the ISC DHCP format implementation all come
-  from here.
 - `github.com/tomtana/python-glinet` - Python JSON-RPC client. The most complete public
   implementation of the challenge/login flow, including the `alg` map and the keepalive
   thread.

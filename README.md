@@ -232,9 +232,10 @@ wrong four times — see [Limitations](#limitations).
 - Network reachability to the router's LAN address.
 
 Verified against a GL-SFT1200 (Opal) reporting firmware **4.3.28**. Other GL.iNet 4.x models
-share the API, but this one is a reduced build: six endpoints GL.iNet documents are absent.
-See [`docs/api/`](docs/api/README.md), where each method is marked verified, absent or
-untested.
+share the API, but this one is a reduced build. Nine documented endpoints are absent on it:
+three are marked so in [`docs/api/`](docs/api/README.md), where each method is tagged verified,
+absent or untested, and six more come from GL.iNet's original public reference and are recorded
+in [`GL_INET_4X_API_DOCUMENTATION.md`](GL_INET_4X_API_DOCUMENTATION.md).
 
 ## Quick start
 

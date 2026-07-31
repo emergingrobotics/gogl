@@ -322,8 +322,9 @@ host europa {
 }
 ```
 
-The format is kept on its own merits, not for compatibility: it diffs, it reviews, it lives
-in git, and it is how a UniFi dump from `gofips` gets in.
+The format is a deliberate choice, not a compatibility obligation: it diffs, it reviews, it
+lives in git next to the code whose tests depend on those addresses, and it is readable
+without a tool.
 
 ### `gogl lan reservations import [file]`
 
@@ -436,6 +437,11 @@ name, so resolution does not split between two suffixes.
 The domain is stored inside gogl's block in the host file. The firmware exposes no dnsmasq
 domain setting, so gogl writes fully-qualified names instead — which works for any suffix —
 and keeps the suffix where it travels with the device.
+
+**Which suffix to pick.** Any works, but two are reserved for exactly this and cannot ever
+collide with a real domain: `.test` (RFC 2606, and the natural fit for a test bench) and
+`.example`. Avoid `.local` — RFC 6762 assigns it to mDNS, so Avahi or Bonjour on your
+clients will answer for it before dnsmasq is asked.
 
 ### `gogl lan dns add NAME ADDR`
 
@@ -805,26 +811,25 @@ what you want, entirely unannounced.
 
 ## Recipes
 
-### Copy a network from UniFi to a travel router
+### Stand up a test bench from a file
+
+Order matters: the domain is a precondition for reservations, and moving the subnet drops
+the session.
 
 ```bash
-# At home, against the controller:
-gofips -H 192.168.4.1 -k --get > home.hosts
-
-# On the travel router, in order:
-gogl lan dns set --domain lab.example
+gogl lan dns set --domain bench.test
 gogl lan set --ip 192.168.4.1 --mask 255.255.255.0 \
              --pool-start 192.168.4.100 --pool-end 192.168.4.149
 # reconnect at the new address
-gogl -H 192.168.4.1 lan reservations import home.hosts --dry-run
-gogl -H 192.168.4.1 lan reservations import home.hosts
+gogl -H 192.168.4.1 lan reservations import bench.hosts --dry-run
+gogl -H 192.168.4.1 lan reservations import bench.hosts
 ```
 
 ### Clone one router onto another
 
 ```bash
-gogl --router home   profile export --with-keys > home.json
-gogl --router travel profile import home.json --wireless
+gogl --router bench1 profile export --with-keys > bench.json
+gogl --router bench2 profile import bench.json --wireless
 ```
 
 ### Rename the WiFi for a site

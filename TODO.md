@@ -1,7 +1,7 @@
 # TODO: capture pass on the SFT1200
 
-Phase 4 of [`docs/DESIGN-V2.md`](docs/DESIGN-V2.md) waits on this. The rest of phase 1 and all of
-phase 2 do not — those are wiring over endpoints already verified.
+Phases 3 and 4 of [`docs/DESIGN-V2.md`](docs/DESIGN-V2.md) wait on this. Phases 1 and 2 have
+shipped — they were wiring over endpoints already verified, and needed no device.
 
 **The OpenWrt One steps are gone.** Generic OpenWrt support was dropped: `gogl` is a GL.iNet 4.x
 tool and will stay one. See [Scope](VISION.md#scope). Nothing here needs a second device.
@@ -10,8 +10,8 @@ Everything below is read-only except where marked. Record into `discovery/captur
 because these payloads carry WiFi passphrases in cleartext.
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"
 mkdir -p discovery/captures
-cd ~/h/src/er/gogl
 export GL_ROUTER_IP=192.168.8.1      # or wherever it is now
 export GL_PASSWORD='...'             # leading space if HISTCONTROL=ignorespace
 ```
@@ -99,7 +99,9 @@ shape confirmed first. Do not run it blind.
 
 ## 4. `system reboot` — uncaptured
 
-`gogl system reboot` is in the tree with nothing behind it. The `reboot` group has 2 methods.
+`gogl system reboot` is **not** in the tree — `gogl system` exposes only `info`. DESIGN-V2
+lists the command as planned-not-shipped for exactly this reason. The `reboot` group has 2
+methods.
 
 ```bash
 grep -A 12 '^| \[`' docs/api/reference/reboot.md
@@ -137,23 +139,31 @@ reported maximum.
 1. `sft1200-wan.txt` — becomes the `wan` types and command surface
 2. `sft1200-acl.txt` — becomes `access`
 3. A `clients get_list` capture showing `online_time`, `remote` and `type`
-4. Whether a radio write works, and whether `--set-htmode 40` is accepted
+4. Whether a radio write works, and whether `gogl radio set --width 40` is accepted
 
 With 1 and 2 I can write those areas from evidence rather than from a vendor description that has
-been wrong three times: `dhcp.*` does not exist, `dns.set_host` rejects `(`, `)` and `=`, and
-`htmodes` is an object rather than an array.
+been wrong four times: `dhcp.*` does not exist, `dns.set_host` rejects `(`, `)` and `=`,
+`htmodes` is an object rather than an array, and `clients.online_time` is a number where a
+string is documented.
 
 ---
 
 ## Meanwhile, needing no hardware
 
-**The documentation.** `make check-docs` fails: README has no `### gogl` section and still
-documents the four removed binaries across 109 references, and VISION carries three full tool
-specifications for a CLI that no longer exists. That is the largest outstanding job and it needs
-no device.
+**The documentation is done.** README, VISION, DESIGN, DESIGN-V2 and the guide were rewritten
+for the one-binary CLI, and `make check-docs` passes. The historical plans under `docs/plan*.md`
+still name the four removed binaries throughout; that is deliberate, since they are the record
+of how the project was built and each carries a banner saying so.
 
-Smaller:
+Still outstanding, needing no device:
+
+- **`gogl lan reservations renumber`** — rewrite the network part of every address in a host
+  file to a target subnet, preserving host parts. A pure text transformation, so cheap to
+  trust, and the alternative to re-IPing the router.
+
+Needing the captures above:
 
 - `gogl clients prune`, wrapping `clients.remove_offline`, once section 3 confirms its shape.
 - `remote` replacing the wireless-session guard's UDP-routing trick, same condition.
 - `gogl access` and `gogl wan`, from sections 1 and 2.
+- `gogl system reboot`, from section 4.

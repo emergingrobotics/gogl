@@ -4,8 +4,8 @@
 
 > ## Status: executed, and superseded in part
 >
-> This plan was written before any of it ran against hardware, and three of its premises turned
-> out to be wrong. It is kept as the record of how the project was built, not as a description
+> This plan was written before any of it ran against hardware, and several of its premises
+> turned out to be wrong. It is kept as the record of how the project was built, not as a description
 > of what it now does. **For current behavior read [`../README.md`](../README.md) and
 > [`DESIGN.md`](DESIGN.md); for the verified API surface read
 > [`../GL_INET_4X_API_DOCUMENTATION.md`](../GL_INET_4X_API_DOCUMENTATION.md).**
@@ -21,14 +21,21 @@
 >    replace the old "read-only everything else" rule.
 > 3. **Endpoint names were guessed.** `dhcp.*` does not exist on this device; the real groups are
 >    `lan.*` and `dns.*`. Every group and method constant below should be read as provisional.
-> 4. **Wireless was out of scope and now is not.** `goglnet` writes SSIDs, passphrases,
->    encryption, hidden and enabled state, plus channel, bandwidth, hardware mode and transmit
->    power -- guarded so that no wireless write happens over a wireless session.
+> 4. **Wireless was out of scope and now is not.** `gogl wifi set` writes SSIDs, passphrases,
+>    encryption, hidden and enabled state, and `gogl radio set` writes channel, bandwidth,
+>    hardware mode and transmit power -- guarded so that no wireless write happens over a
+>    wireless session.
 > 5. **Field shapes taken from the vendored API description were wrong more than once.**
 >    `dns.set_host` rejects `(`, `)` and `=` anywhere in the file, which broke every host-file
 >    write; `wifi.get_config` sends `htmodes` as an object rather than an array, which broke
 >    every wireless read. Both were typed from the description rather than a capture. Fixtures
 >    are now verbatim captures, with tests asserting they decode through the library's own types.
+> 6. **The four utilities became one binary.** Everything below names `goglps`, `goglmac`,
+>    `goglnet` or `goglcfg`. Those binaries no longer exist: the CLI is a single `gogl` with a
+>    `gogl <area> <action>` tree, and their logic moved to importable packages under
+>    `utilities/internal/`. Read every utility name below as the area that replaced it --
+>    `gogl lan reservations`, `gogl clients`, `gogl lan`/`wifi`/`radio`, and `gogl profile`.
+>    See [`DESIGN-V2.md`](DESIGN-V2.md).
 >
 > The plan's *method* held up: mock first, transport second, one transparent retry, no hardware
 > in the test suite. It was the API assumptions that did not survive contact.

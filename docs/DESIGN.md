@@ -22,39 +22,39 @@ This document describes the **library** under `src/`. The command-line surface i
 ## The Problem
 
 A network's addressing is the part devices depend on. A robot, a signage player, or a
-build machine configured to reach `nas` at `192.168.4.13` stops working the moment it is
+device under test configured to reach `nas` at `192.168.4.13` stops working the moment it is
 plugged into a network that does not agree. Reproducing that agreement by hand on a travel
 router, one reservation at a time through a web UI, is slow and error-prone, and it has to
 be redone every time the kit is reset.
 
-`gofi` already exports a UniFi site's fixed-IP and DNS bindings as ISC DHCP host
-declarations. `gogl` imports that same file into a GL.iNet travel router. The router then
-hands out the same addresses to the same MAC addresses and answers the same names.
+`gogl` makes the network a file instead. A host file carries the addressing; a profile
+carries the whole network. Either can be committed and re-applied, to the same router after
+a reset or to a second router that needs to match the first.
 
 ```mermaid
 graph LR
-    subgraph home["At home / in the lab"]
-        UDM[UniFi UDM Pro]
-        GOFIPS[gofips --get]
-        UDM -->|"users + DNS records"| GOFIPS
+    subgraph capture["Capture, once"]
+        OPAL1[GL-SFT1200<br/>configured as wanted]
+        EXPORT["gogl … export"]
+        OPAL1 --> EXPORT
     end
 
-    FILE["home.hosts<br/>(ISC DHCP host declarations)"]
-    GOFIPS --> FILE
+    FILE["bench.hosts / bench.json<br/>(ISC DHCP declarations, or a profile)"]
+    EXPORT --> FILE
 
-    subgraph field["On the road / on the bench"]
-        GOGLPS[gogl lan reservations import]
-        OPAL[GL-SFT1200]
-        GOGLPS -->|"reservations"| OPAL
+    subgraph apply["Apply, any number of times"]
+        IMPORT["gogl … import"]
+        OPAL2[GL-SFT1200<br/>after a reset, or a second unit]
+        IMPORT -->|"bindings + names"| OPAL2
     end
 
-    FILE --> GOGLPS
+    FILE --> IMPORT
 
     FILE -.->|"diffable, version-controlled"| GIT[(git)]
 ```
 
 The file is the contract. It is plain text, so it diffs, reviews, and version-controls, and
-a kit's network is reproducible from a commit rather than from memory.
+a bench's network is reproducible from a commit rather than from memory.
 
 ---
 
@@ -82,7 +82,7 @@ findings on hardware made that untenable:
 
 1. A static bind creates no DNS record. Names require a second write, to the host file, so
    there was already more than one writable surface.
-2. Replicating a gofi network means matching its subnet. Requiring that be done by hand in the
+2. Reproducing a network means matching its subnet. Requiring that be done by hand in the
    admin panel, in the middle of an otherwise scripted workflow, defeats the point of the tool.
 
 So gogl now writes the network too, and the transactional problem is handled explicitly rather
@@ -187,7 +187,7 @@ graph TD
     TRANSPORT -.->|"tests point here"| MOCK
 ```
 
-Directory layout, mirroring `gofi` so the two read side by side:
+Directory layout:
 
 ```
 gogl/
@@ -195,15 +195,21 @@ gogl/
 │   ├── client.go           # Client, Config, service accessors, Close
 │   ├── errors.go           # Sentinel errors, RPCError
 │   ├── types/
-│   │   ├── network.go      # Network (LAN + DHCP, read-only)
+│   │   ├── network.go      # Network (LAN + DHCP)
 │   │   ├── reservation.go  # Reservation + name/MAC/IP validation
+│   │   ├── hosts.go        # HostFile, HostEntry, managed-block parsing
+│   │   ├── wireless.go     # Radio, Interface, HTModes, change sets
 │   │   ├── client.go       # Client (connected station)
 │   │   ├── system.go       # SystemInfo
+│   │   ├── flex.go         # FlexString, IntBool
+│   │   ├── errors.go       # Validation sentinels
 │   │   └── leasetime.go    # LeaseTime
 │   ├── services/
 │   │   ├── services.go     # Interface declarations
 │   │   ├── network.go
 │   │   ├── reservation.go
+│   │   ├── hosts.go
+│   │   ├── wireless.go
 │   │   ├── client.go
 │   │   └── system.go
 │   ├── auth/
@@ -214,8 +220,7 @@ gogl/
 │   │   └── rpc.go          # JSON-RPC envelope, sid, keepalive, retry
 │   ├── mock/
 │   │   ├── server.go       # httptest /rpc server, challenge/login/alive
-│   │   ├── handlers.go     # Per-group dispatch, fixtures, fault injection
-│   │   └── fixtures/       # Verbatim captures from a live device (pending Phase 0)
+│   │   └── handlers.go     # Per-group dispatch, fixtures, fault injection
 │   └── ipmath/             # Subnet containment, uint32 sort, pool ranges
 ├── utilities/
 │   ├── gogl/               # The single binary: cobra tree, one file per area.
@@ -233,8 +238,8 @@ gogl/
 └── docs/
 ```
 
-The four former utilities -- `gogl lan reservations`, `gogl lan show`, `gogl clients list`, `gogl profile` -- became the four
-packages under `internal/`. They were separate `package main`s sharing about fifteen
+The four former utilities -- for reservations, the network report, the client list and
+profiles -- became the four packages under `internal/`. They were separate `package main`s sharing about fifteen
 identifier names (`formatText`, `mockClient`, `stubNetwork`, `testLAN`, and several `Test*`),
 so merging them into one namespace would have meant renaming all of those. Separate packages
 needed no renames at all, and every test survived the move.
@@ -255,8 +260,9 @@ import (
 ```
 
 The module is `github.com/emergingrobotics/gogl` and the library sits under `src/`, so the
-root package is imported as `.../gogl/src` while its package name is `gogl`. This is
-`gofi`'s arrangement, kept for consistency.
+root package is imported as `.../gogl/src` while its package name is `gogl`. Keeping the
+library in a subdirectory leaves `examples/` and `utilities/` as its peers, so the three
+surfaces — library, consumers, CLI — sit at one level.
 
 ---
 
@@ -357,8 +363,9 @@ type session struct {
 ```
 
 The pattern is double-checked locking: a caller that finds the sid stale takes `loginMu`,
-re-reads the sid, and only logs in if another goroutine has not already done so. This is
-the same shape as `gofi`'s CSRF token handling, for the same reason.
+re-reads the sid, and only logs in if another goroutine has not already done so. Without it,
+N concurrent calls hitting an expired session would trigger N logins against a very small
+SoC.
 
 ---
 
@@ -451,13 +458,7 @@ false. The corrected model:
 
 ```mermaid
 graph TB
-    subgraph unifi["UniFi (gofi) - two objects, can drift"]
-        U["User record<br/>mac, fixed_ip, use_fixedip"]
-        D["DNS record<br/>key, value, record_type"]
-        U -.->|"must be kept<br/>consistent by hand"| D
-    end
-
-    subgraph glinet["GL.iNet (gogl) - also two objects, also can drift"]
+    subgraph glinet["GL.iNet - two objects, which can drift"]
         R["Reservation<br/>name, mac, ip"]
         H["Host-file entry<br/>ip, names"]
         R --> DHCP["DHCP binding"]
@@ -487,10 +488,10 @@ Design consequences:
   both from one host declaration, so this is invisible in normal use.
 - `Name` on a `Reservation` is a label: it identifies the entry in the admin panel and keys it
   in an exported ISC DHCP host file. Neither is DNS. The DNS record is a `HostEntry`.
-- **Drift is possible**, and it is the same class of problem `gofi` has with UniFi's separate
-  user and DNS records. gogl treats it as repairable rather than exceptional: the two diffs in
-  `gogl lan reservations import` run independently, so a binding whose name went missing gets its name back on
-  the next run. See [Reconciliation](#reconciliation).
+- **Drift is possible**, since nothing in the firmware joins the binding to the host-file
+  entry. gogl treats it as repairable rather than exceptional: the two diffs in
+  `gogl lan reservations import` run independently, so a binding whose name went missing gets
+  its name back on the next run. See [Reconciliation](#reconciliation).
 - Names sometimes resolve without gogl's involvement, because most clients announce a sensible
   DHCP hostname. That is the client's doing, outside gogl's control, and not something to rely
   on: it disappears when the lease does.
@@ -541,8 +542,8 @@ Validation rejects rather than escapes:
 | Each label ≤ 63 chars, total ≤ 253 | DNS limits |
 | Must not be empty | A nameless reservation is not writable through this path |
 
-This is **stricter than `gofips`**, which permits `_`. A UniFi record named `my_server`
-is rejected, with the offending character named, rather than silently rewritten to
+Note that `_` is **rejected**, though some DHCP tooling permits it. A host named
+`my_server` fails with the offending character named, rather than being silently rewritten to
 `my-server`. Renaming a host is the operator's decision.
 
 Validation lives on the type, not in the CLI, so the library cannot be used to write a
@@ -676,14 +677,14 @@ the suffix stored where it travels with the device.
 
 ### LeaseTime
 
-The one genuine format conversion in the module. UniFi expresses lease time as an integer
-count of seconds; dnsmasq expresses it as a duration string.
+The one genuine format conversion in the module. DHCP tooling disagrees on how to express a
+lease: some use an integer count of seconds, dnsmasq uses a duration string. Reading is the
+only direction exercised -- no verified endpoint writes the lease time.
 
 ```go
 // LeaseTime is a DHCP lease duration. It unmarshals from a dnsmasq duration
-// string ("12h", "1d", "infinite") or a bare number of seconds, and marshals to
-// the dnsmasq duration form. This bridges UniFi's dhcpd_leasetime, which is
-// always an integer of seconds, and dnsmasq's string form.
+// string ("12h", "1d", "2w", "infinite") or a bare count of seconds, and
+// marshals to the dnsmasq duration form.
 type LeaseTime time.Duration
 
 // LeaseInfinite is the sentinel for dnsmasq's "infinite", which has no
@@ -698,19 +699,20 @@ func (l LeaseTime) String() string
 ### Client and SystemInfo
 
 ```go
-// Client is a station currently known to the router. Field presence varies with
-// firmware, so optional fields are pointers or zero-checked; nothing is
-// invented to match gofi's richer UniFi client record.
+// Client is a station currently known to the router. The field set mirrors what
+// firmware 4.3.28 actually returns from clients.get_list. An earlier version of
+// this type guessed is_wired, band, rx_bytes and signal, none of which exist, so
+// wired/wireless filtering silently matched nothing.
 type Client struct {
-    MAC      string `json:"mac"`
-    IP       string `json:"ip,omitempty"`
-    Name     string `json:"name,omitempty"`
-    Online   bool   `json:"online"`
-    IsWired  bool   `json:"is_wired"`
-    RXBytes  uint64 `json:"rx_bytes,omitempty"`
-    TXBytes  uint64 `json:"tx_bytes,omitempty"`
-    Signal   *int   `json:"signal,omitempty"`
-    Band     string `json:"band,omitempty"`
+    MAC        string     `json:"mac"`
+    IP         string     `json:"ip,omitempty"`
+    Name       string     `json:"name,omitempty"`
+    Online     bool       `json:"online"`
+    Iface      string     `json:"iface,omitempty"`      // "cable", "2.4G" or "5G"
+    Blocked    bool       `json:"blocked,omitempty"`
+    OnlineTime FlexString `json:"online_time,omitempty"`
+    RXBytes    uint64     `json:"total_rx,omitempty"`
+    TXBytes    uint64     `json:"total_tx,omitempty"`
 }
 
 // SystemInfo identifies the device.
@@ -722,17 +724,24 @@ type SystemInfo struct {
 }
 ```
 
-`gofi`'s `FlexInt` and `FlexBool` are deliberately **not** ported. UniFi's JSON is
-inconsistent about types; GL.iNet's is not. They get added only if a recorded fixture
-proves a field needs them, and the `alg` field in the challenge response is the one known
-case so far — handled locally in `auth`, not by a general-purpose flex type.
+Permissive "decodes from either shape" types get added **only when a recorded fixture proves
+the need**. That rule was written on the assumption GL.iNet's JSON was reliably typed. It is
+not, and the rule has now been satisfied twice, so `src/types` carries:
+
+- **`FlexString`** — `clients.online_time` is documented as a string and firmware 4.3.28 sends
+  a number, which made every `clients.get_list` decode fail.
+- **`IntBool`** — the firmware sends `enable: 1`, not `true`.
+
+The `alg` field in the challenge response is still handled locally in `auth` rather than by a
+general-purpose type. The rule itself stands: do not add a third on the strength of GL.iNet's
+API description, which has now been wrong four times in ways only hardware revealed.
 
 ---
 
 ## Service Interfaces
 
 Small interfaces, one per concern, each independently mockable. No `site` parameter
-anywhere: GL.iNet routers have no equivalent of a UniFi site.
+anywhere: a GL.iNet router has nothing equivalent to a controller managing many sites.
 
 ```go
 package services
@@ -1167,7 +1176,7 @@ Every function has a test; no phase advances below 100% coverage. Beyond that:
 | `types` | Validation tables, especially name rejection. `LeaseTime` round-trips both input forms. |
 | `services` | Against the mock with fixtures; assert on the mock's resulting state, not only returned values. |
 | `ipmath` | Property tests: subnet containment, pool boundaries, uint32 ordering. |
-| `utilities/internal/reservations/parse.go` | Round-trip: parse → format → parse is stable. Real `gofips --get` output as a fixture. |
+| `utilities/internal/reservations/parse.go` | Round-trip: parse → format → parse is stable, against a real third-party ISC DHCP export as a fixture. |
 | Concurrency | `-race` on every run. A test that fires N concurrent calls at an expired session and asserts exactly one login occurred. |
 
 The concurrency test is the one worth writing first and keeping. Double-checked locking
@@ -1176,10 +1185,18 @@ load, which is exactly where a small SoC punishes it.
 
 ### Interoperability
 
-One test that is not a unit test and matters more than any of them: a committed
-`gofips --get` output file, parsed by `gogl lan reservations`, asserted to yield the expected
-reservations. That is the interoperability contract between the two modules, and it is the
-only thing that would catch `gofi` changing its output format.
+One test that is not a unit test and matters more than any of them: a committed ISC DHCP
+export produced by a different tool, parsed by `gogl lan reservations`, asserted to yield the
+expected reservations. Its fixtures are transcribed byte for byte from that tool's formatter
+rather than invented -- header lines, blank line before each block, four-space indent, closing
+brace on its own line.
+
+That is the format-compatibility contract, and the only thing that would catch the parser
+drifting away from real-world ISC DHCP output. A fixture written by the same person who wrote
+the parser proves nothing; one transcribed from a foreign implementation does.
+
+`utilities/internal/reservations/interop_test.go` and its two `testdata/` fixtures still carry
+the originating tool's name.
 
 ---
 
@@ -1234,16 +1251,16 @@ Dated for future readers wondering why.
 
 | Date | Decision | Reasoning |
 |------|----------|-----------|
-| 2026-07-27 | ~~Reservations are the only thing `gogl` writes~~ **superseded 2026-07-28** | Mirrored `gofi`'s read/write posture per tool and removed transactional complexity. Two hardware findings killed it: a static bind creates no DNS record, so names needed a second writable surface; and requiring a hand-edited subnet mid-workflow defeated the tool. Replaced by the ordering guards. |
-| 2026-07-27 | Three utilities only: `gogl lan reservations`, `gogl clients list`, `gogl lan show` | One-for-one with `gofi`'s `gofips`, `gofimac`, `gofinet`. Scope beyond the mirror is not v1. |
-| 2026-07-27 | ISC DHCP host declarations are the interchange format; no new format | `gofips --get` already emits exactly name + MAC + IP. A new JSON profile would carry no additional information for this scope. |
+| 2026-07-27 | ~~Reservations are the only thing `gogl` writes~~ **superseded 2026-07-28** | Removed transactional complexity. Two hardware findings killed it: a static bind creates no DNS record, so names needed a second writable surface; and requiring a hand-edited subnet mid-workflow defeated the tool. Replaced by the ordering guards. |
+| 2026-07-27 | ~~Three utilities only: `goglps`, `goglmac`, `goglnet`~~ **superseded 2026-07-30** | Named one-for-one with a sibling UniFi project's tools, so that knowing one set meant knowing the other. Superseded by the single `gogl` binary; see the 2026-07-30 entry. |
+| 2026-07-27 | ISC DHCP host declarations are the interchange format | The format carries exactly name + MAC + IP, which is all a reservation needs, and it diffs, reviews and version-controls. A new JSON format would have carried no additional information for that scope. (A JSON *profile* was added later for whole networks, which do carry more.) |
 | 2026-07-27 | ~~JSON-RPC only; no SSH, no UCI, no shell~~ **amended 2026-07-28** | The mock-reachability argument applies to any HTTP API, not to JSON-RPC specifically, so UCI over `POST /ubus` would have been admissible. Moot regardless: `/ubus` is 404 on this device, since nginx fronts the admin interface rather than uhttpd. SSH and shell stay excluded, being unmockable. |
 | 2026-07-27 | Two `challenge` calls per login | The nonce lives ~1s while the SHA-512 crypt is deliberately slow. One challenge is a race that fails intermittently. |
 | 2026-07-27 | Transparent re-login retries exactly once | Covers the keepalive race without turning a bad password into a login flood. |
 | 2026-07-27 | `Config.InsecureSkipVerify` defaults secure; CLIs default insecure | A library must not be insecure at its zero value. A CLI that cannot reach a self-signed device out of the box is useless. |
-| 2026-07-27 | Reservation names validated strictly, and rejected not escaped | A quote in a name can corrupt dnsmasq's config and break DHCP and DNS device-wide. Stricter than `gofips`, which allows `_`. |
-| 2026-07-27 | IP inside the DHCP pool warns, never errors | dnsmasq honors a static lease inside the dynamic range and excludes it from allocation. Erroring would reject valid UniFi dumps over an ISC dhcpd hazard that does not apply here. |
-| 2026-07-27 | `FlexInt`/`FlexBool` not ported from `gofi` | GL.iNet's JSON is well-typed. Add them only when a fixture proves a need. The one known case, `alg`, is handled locally in `auth`. |
+| 2026-07-27 | Reservation names validated strictly, and rejected not escaped | A quote in a name can corrupt dnsmasq's config and break DHCP and DNS device-wide. Stricter than some DHCP tooling, which allows `_`. |
+| 2026-07-27 | IP inside the DHCP pool warns, never errors | dnsmasq honors a static lease inside the dynamic range and excludes it from allocation. Erroring would reject perfectly valid host files over an ISC dhcpd hazard that does not apply here. |
+| 2026-07-27 | ~~No permissive "either shape" decode types~~ **superseded 2026-07-29** | Held that GL.iNet's JSON was well-typed, and that such types get added only when a fixture proves a need. The second clause survived; the first did not. `clients.online_time` is documented as a string and firmware 4.3.28 sends a number, so `FlexString` exists, as does `IntBool` for `enable: 1`. `alg` is still handled locally in `auth`. |
 | 2026-07-27 | No `--check` verify mode in v1 | `--dry-run` shows differences to a human. A scriptable exit-code gate is additive later if it proves to be a real need. |
 | 2026-07-28 | The login digest is selected by the challenge's `hash-method`, not hardcoded | Firmware 4.3.28 on the SFT1200 reports `sha256`; every public client library hardcodes MD5 and fails against it with `-32000 Access denied`, which is indistinguishable from a wrong password. Absent field means MD5, for older firmware. An unrecognized value is a hard error, never a fallback. |
 | 2026-07-28 | The firmware's login lockout gets its own sentinel | `-32003` with `data.wait` locks the account for ~10 minutes after roughly a dozen failures, and refuses a correct password while locked. Reporting it as a generic auth failure sends the operator to check a password when the fix is to wait. Learned by tripping it. |
@@ -1261,13 +1278,13 @@ Dated for future readers wondering why.
 | 2026-07-29 | Wireless identity is writable, guarded rather than forbidden | It was out of scope because writing wireless over a wireless session locks you out. That reason survives as a guard: `gogl` finds its own address in `client.get_list` and refuses unless the firmware reports it on `cable`. Reproducing a network means reproducing what devices associate to, not only what addresses they get. |
 | 2026-07-29 | The session guard refuses any WiFi path, not just the radio being changed | Changing the 2.4G SSID from a 5G association is provably safe, so the strict rule refuses some valid writes. It is still the right default: the cost of the strict rule is plugging in a cable, and the cost of a subtle rule that is wrong once is a walk to the hardware. `--yes` waives the prompt and deliberately does not waive this. |
 | 2026-07-29 | An undeterminable session path is a refusal, not a warning | If gogl cannot tell how it reaches the router, it cannot tell whether the write is recoverable. Proceeding on an unanswerable question is exactly the bet whose downside is unrecoverable. |
-| 2026-07-29 | SSID writes live in `gogl lan show`, not a fourth utility | The three-tool mirror of `gofi` is worth more than a tidier separation, and an SSID is network configuration. A `goglwifi` would break the mirror for one flag. |
+| 2026-07-29 | ~~SSID writes live in `goglnet`, not a fourth utility~~ **superseded 2026-07-30** | At the time the three-tool naming mirror was worth more than a tidier separation, and an SSID is network configuration. The one-binary tree dissolved the constraint: SSID writes are now `gogl wifi set`, split from `gogl radio set` along the seam the firmware itself scopes writes by. |
 | 2026-07-29 | Passphrases are masked in output but readable over the API | The firmware returns them cleartext on port 80; reading them needs LAN access plus the admin password, the same bar as the admin panel, so it is accepted rather than worked around. Masking keeps a key out of scrollback and pasted bug reports, which is a different problem from access control. |
 | 2026-07-29 | The marker line carries the domain as bare words, not `(domain: x)` | `dns.set_host` rejects `(`, `)` and `=` anywhere in the file with `-32602`, naming nothing. The parenthesized form made every host-file write fail on hardware while all 404 tests passed, because the mock accepted what its author sent. The mock now enforces the firmware's rule, and `types.ValidateContent` catches a violation before the RPC. |
 | 2026-07-29 | An empty managed block is not written | `Render` omitted nothing, so clearing an already-empty router still pushed a file. Combined with the marker bug that turned a no-op into a hard failure. A block with no domain and no entries says nothing worth persisting. |
 | 2026-07-28 | The DNS domain lives in gogl's host-file marker line | No endpoint sets dnsmasq's `domain`, and `/ubus` is unavailable, so there is no way to make the router append a suffix. gogl writes fully-qualified names instead, which works for any suffix, and needs somewhere to keep the suffix. The marker line puts it on the device, so it travels with the router rather than living beside whichever machine ran the tool. |
 | 2026-07-28 | A reservation write requires a configured domain | A bind with no name is an address nothing can find, and nothing in the router's UI flags it as incomplete. Gating the write turns a silent omission into an error where the mistake is. Reads and deletes stay ungated: only writes that create addressing are. |
-| 2026-07-29 | A fourth utility, `gogl profile`, for whole-network profiles | The gofi mirror exists so that knowing one set of tools means knowing the other; it was never a cap on the project's contents. Capturing a network spans all three existing tools and belongs in none, so it gets its own. |
+| 2026-07-29 | A fourth utility, `goglcfg`, for whole-network profiles | The three-tool naming mirror was never a cap on the project's contents. Capturing a network spans all three existing tools and belongs in none, so it gets its own. Now `gogl profile`. |
 | 2026-07-29 | A profile carries a network, not a router | Omitting the unit's MAC, serial, uptime and lease state is what makes the file usable on a second device -- the whole point. Client MACs are kept, since a reservation is a MAC-to-IP binding. Sections are limited to verified endpoints: 110 getters exist, 23 are verified, and the rest would be guesswork of exactly the kind that has already been wrong three times. |
 | 2026-07-29 | Profile passphrases are omitted by default, and an omitted key is not an empty key | A profile is a file people commit. On apply a missing key is simply not written, leaving the target's own, so the private default is also the non-destructive one. Rests on the verified partial-update behavior of `wifi.set_config`. |
 | 2026-07-29 | A subnet move ends a profile apply, with resume instructions | The router changes address mid-write, so nothing after that step is reachable. Continuing would write over a dead connection; reporting success would be a lie about a third-applied profile. |
@@ -1279,6 +1296,7 @@ Dated for future readers wondering why.
 | 2026-07-28 | Pool validation lives on `types.Network`, not in the service | `gogl lan set --dry-run` runs the same check. A preview that approves what the write would reject is worse than no preview, so the two paths run identical code rather than similar code. |
 | 2026-07-28 | Per-entry reservation writes, not a whole-table replace | `lan.add_static_bind` / `set_static_bind` / `remove_static_bind` are what the device exposes; there is no replace. Per-entry also means a failure is per-entry and reportable, rather than an all-or-nothing table write. |
 | 2026-07-27 | API discovery precedes typed services | The official reference is gone. Group and method names come from recorded fixtures, never from guesses or third-party code. |
+| 2026-07-30 | One binary, `gogl <area> <action>`, replacing the four utilities | Four binaries meant four flag parsers, four help texts and four copies of the connection flags. Noun-verb is what git, docker and kubectl converged on. The external naming mirror that had held the tool names in place was dropped rather than allowed to decline a better tree; the ISC DHCP format stayed, on its own merits. The four `main` packages became importable packages under `utilities/internal/` so their tests survived the move intact. See [`DESIGN-V2.md`](DESIGN-V2.md). |
 
 ---
 

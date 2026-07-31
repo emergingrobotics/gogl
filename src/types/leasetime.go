@@ -23,9 +23,10 @@ const (
 // string ("12h", "1d", "2w", "infinite") or a bare count of seconds, and
 // marshals to the dnsmasq duration form.
 //
-// This bridges two vocabularies. UniFi expresses dhcpd_leasetime as an integer
-// count of seconds; dnsmasq uses duration strings. Only unmarshalling matters
-// for reading a device, since gogl never writes network configuration.
+// Both forms are accepted because DHCP tooling disagrees: some expresses a lease
+// as an integer count of seconds, dnsmasq as a duration string. Only unmarshalling
+// is exercised against a device — the firmware exposes no verified endpoint that
+// writes the lease time, so gogl reads it and cannot set it.
 type LeaseTime time.Duration
 
 // UnmarshalJSON accepts a JSON number of seconds or a duration string. Both
