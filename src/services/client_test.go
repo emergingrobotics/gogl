@@ -68,3 +68,22 @@ func TestClientListPropagatesError(t *testing.T) {
 		t.Error("List succeeded, want error")
 	}
 }
+
+// String values for counters, as some firmware versions return them.
+func TestClientListWithStrings(t *testing.T) {
+	s := mock.NewServer(t, mock.Options{Password: "secret"})
+	s.LoadFixture(mock.ClientGroup, mock.MethodGetList, json.RawMessage(`{"clients":[
+		{"mac":"aa:bb:cc:dd:ee:01","ip":"192.168.8.13","name":"nas","online":true,"iface":"cable","total_rx":"100","total_tx":"200"}
+	]}`))
+
+	got, err := services.NewClientService(newTransport(t, s)).List(context.Background())
+	if err != nil {
+		t.Fatalf("List error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("List returned %d, want 1", len(got))
+	}
+	if got[0].TXBytes.Uint64() != 200 || got[0].RXBytes.Uint64() != 100 {
+		t.Errorf("counters = tx %d, rx %d; want 200, 100", got[0].TXBytes.Uint64(), got[0].RXBytes.Uint64())
+	}
+}

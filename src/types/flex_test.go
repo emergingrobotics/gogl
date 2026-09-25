@@ -102,7 +102,62 @@ func TestClientDecodesCapturedPayload(t *testing.T) {
 	if !c.IsWired() {
 		t.Error("a cable client did not report as wired")
 	}
-	if c.RXBytes != 204800 || c.TXBytes != 102400 {
-		t.Errorf("byte totals = %d/%d", c.RXBytes, c.TXBytes)
+	if c.RXBytes.Uint64() != 204800 || c.TXBytes.Uint64() != 102400 {
+		t.Errorf("byte totals = %d/%d", c.RXBytes.Uint64(), c.TXBytes.Uint64())
+	}
+}
+
+// Test that FlexUint64 handles both string and numeric values.
+func TestFlexUint64DecodesNumberAndString(t *testing.T) {
+	tests := map[string]struct {
+		json string
+		want uint64
+	}{
+		"number":       {`{"val": 4096}`, 4096},
+		"string":       {`{"val": "4096"}`, 4096},
+		"zero":         {`{"val": 0}`, 0},
+		"empty string": {`{"val": ""}`, 0},
+		"null":         {`{"val": null}`, 0},
+		"absent":       {`{}`, 0},
+		"large":        {`{"val": 102400}`, 102400},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var got struct {
+				Val FlexUint64 `json:"val"`
+			}
+			if err := json.Unmarshal([]byte(tt.json), &got); err != nil {
+				t.Fatalf("Unmarshal(%s): %v", tt.json, err)
+			}
+			if got.Val.Uint64() != tt.want {
+				t.Errorf("Val = %d, want %d", got.Val.Uint64(), tt.want)
+			}
+		})
+	}
+}
+
+// An object or array is a genuine type error.
+func TestFlexUint64RejectsStructuredValues(t *testing.T) {
+	for _, body := range []string{`{"val": {}}`, `{"val": [1]}`} {
+		var got struct {
+			Val FlexUint64 `json:"val"`
+		}
+		if err := json.Unmarshal([]byte(body), &got); err == nil {
+			t.Errorf("Unmarshal(%s) succeeded, want a type error", body)
+		}
+	}
+}
+
+// gogl's own output has one shape regardless of what the firmware sent.
+func TestFlexUint64MarshalsAsNumber(t *testing.T) {
+	out, err := json.Marshal(struct {
+		Val FlexUint64 `json:"val"`
+	}{Val: 4096})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if want := `{"val":4096}`; string(out) != want {
+		t.Errorf("Marshal = %s, want %s", out, want)
 	}
 }

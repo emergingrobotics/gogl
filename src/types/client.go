@@ -48,8 +48,8 @@ type Client struct {
 	// RXBytes and TXBytes are cumulative totals. The firmware also reports
 	// instantaneous rx/tx rates, which this type deliberately omits: a byte total
 	// is meaningful in a report, a momentary rate is not.
-	RXBytes uint64 `json:"total_rx,omitempty"`
-	TXBytes uint64 `json:"total_tx,omitempty"`
+	RXBytes FlexUint64 `json:"total_rx,omitempty"`
+	TXBytes FlexUint64 `json:"total_tx,omitempty"`
 }
 
 // UnknownHostname is reported for a client the router names nothing.

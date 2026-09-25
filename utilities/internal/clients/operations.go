@@ -88,8 +88,8 @@ func buildEntriesAt(clients []types.Client, reservations []types.Reservation, db
 			Since:        sinceOnline(c, now),
 			Reserved:     reserved[mac],
 			Blocked:      c.Blocked,
-			RXBytes:      c.RXBytes,
-			TXBytes:      c.TXBytes,
+			RXBytes:      c.RXBytes.Uint64(),
+			TXBytes:      c.TXBytes.Uint64(),
 			Band:         c.Band(),
 		})
 	}

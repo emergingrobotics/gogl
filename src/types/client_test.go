@@ -93,8 +93,8 @@ func TestClientDecodesRealPayload(t *testing.T) {
 		t.Errorf("Band() = %q", c.Band())
 	}
 	// Cumulative totals, not the instantaneous rates.
-	if c.RXBytes != 8192 || c.TXBytes != 4096 {
-		t.Errorf("counters = rx %d, tx %d; want 8192, 4096 from total_rx/total_tx", c.RXBytes, c.TXBytes)
+	if c.RXBytes.Uint64() != 8192 || c.TXBytes.Uint64() != 4096 {
+		t.Errorf("counters = rx %d, tx %d; want 8192, 4096 from total_rx/total_tx", c.RXBytes.Uint64(), c.TXBytes.Uint64())
 	}
 }
 

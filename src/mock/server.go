@@ -724,3 +724,19 @@ const FactoryClients = `{
      "tx":0,"rx":0,"total_tx":0,"total_rx":0}
   ]
 }`
+
+// FactoryClientsWithStrings is a clients.get_list payload that has total_tx/total_rx
+// as strings rather than numbers, as some firmware versions return them.
+const FactoryClientsWithStrings = `{
+  "clients": [
+    {"mac":"10:51:07:1f:8d:1c","ip":"192.168.8.10","name":"europa","iface":"cable",
+     "online":true,"online_time":"1784548800","blocked":false,"type":2,"remote":false,
+     "tx":"0","rx":"0","total_tx":"102400","total_rx":"204800"},
+    {"mac":"6e:1d:47:db:54:54","ip":"192.168.8.135","name":"iPhone","iface":"5G",
+     "online":true,"online_time":"1784552400","blocked":false,"type":1,"remote":true,
+     "tx":"128","rx":"256","total_tx":"4096","total_rx":"8192"},
+    {"mac":"02:f0:6b:61:70:ff","ip":"192.168.2.138","name":"iPad","iface":"5G",
+     "online":false,"online_time":"0","blocked":false,"type":1,"remote":false,
+     "tx":"0","rx":"0","total_tx":"0","total_rx":"0"}
+  ]
+}`

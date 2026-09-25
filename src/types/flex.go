@@ -64,6 +64,61 @@ func (f FlexString) Int64() (int64, bool) {
 	return n, err == nil
 }
 
+// FlexUint64 is a uint64 that also decodes from a JSON string or number.
+//
+// It exists because GL.iNet's API description is not a reliable guide to its wire
+// format. Some firmware versions return counters as strings rather than numbers.
+type FlexUint64 uint64
+
+// UnmarshalJSON accepts a JSON string, number, or null.
+func (f *FlexUint64) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	switch {
+	case len(b) == 0, bytes.Equal(b, []byte("null")):
+		*f = 0
+		return nil
+	case b[0] == '"':
+		// Empty strings should map to 0.
+		if len(b) == 2 { // just quotes
+			*f = 0
+			return nil
+		}
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		if s == "" {
+			*f = 0
+			return nil
+		}
+		n, err := strconv.ParseUint(s, 10, 64)
+		if err != nil {
+			return err
+		}
+		*f = FlexUint64(n)
+		return nil
+	default:
+		// A number: decode directly.
+		if !isJSONScalar(b) {
+			return fmt.Errorf("cannot decode %s into a uint64-or-string field", b)
+		}
+		n, err := strconv.ParseUint(string(b), 10, 64)
+		if err != nil {
+			return err
+		}
+		*f = FlexUint64(n)
+		return nil
+	}
+}
+
+// MarshalJSON emits the value as a number, so gogl's own output has one stable shape.
+func (f FlexUint64) MarshalJSON() ([]byte, error) {
+	return json.Marshal(uint64(f))
+}
+
+// Uint64 returns the underlying value.
+func (f FlexUint64) Uint64() uint64 { return uint64(f) }
+
 // isJSONScalar reports whether b looks like a number, bool, or other bare token rather
 // than an object or array.
 func isJSONScalar(b []byte) bool {
