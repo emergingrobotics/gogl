@@ -1,4 +1,4 @@
-.PHONY: all build test lint clean coverage examples examples-clean examples-test utilities utilities-clean install uninstall check-docs hil-test api-docs help
+.PHONY: all build test run-tests lint clean coverage examples examples-clean examples-test utilities utilities-clean install uninstall check-docs hil-test api-docs help
 
 # The single `gogl` binary. The four earlier utilities became importable packages under
 # utilities/internal/ -- reservations, netcfg, clients, profile -- so their logic and
@@ -34,6 +34,9 @@ build: utilities
 
 test:
 	go test -v -race -cover ./...
+
+# Alias for `test`, for callers that use the run-tests convention.
+run-tests: test
 
 lint:
 	golangci-lint run ./...
@@ -138,6 +141,7 @@ help:
 	@echo "  all           Run lint, test, and build"
 	@echo "  build         Build the module and utilities into bin/"
 	@echo "  test          Run all tests"
+	@echo "  run-tests     Alias for test"
 	@echo "  lint          Run linter"
 	@echo "  clean         Clean all build artifacts"
 	@echo "  coverage      Generate coverage report"
