@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -20,6 +19,11 @@ func newClientsCommand() *cobra.Command {
 Its own area rather than part of lan, because a station arrives over cable, 2.4GHz or
 5GHz and the useful view is all of them together. Manufacturer lookup is done from the
 IEEE OUI registry independently of the router.`,
+
+		// Runnable + Args so an unknown subcommand here is a usage error (exit 2) rather
+		// than cobra's silent help-with-exit-0 for a non-runnable parent.
+		Args: wrapArgsError(unknownSubcommandArgs),
+		RunE: showHelp,
 	}
 	cmd.AddCommand(newClientsListCommand(), newClientsVendorCommand())
 	return cmd
@@ -40,7 +44,7 @@ not showing it. Pass --all to include them, which adds an ONLINE column.
 SINCE reports how long a client has been connected, where the firmware's value can be
 understood -- its format is undocumented and uncaptured, so it is rendered when it makes
 sense and left blank when it does not.`,
-		Args: cobra.NoArgs,
+		Args: wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			keep, err := clients.FilterFor(wifi, wired)
 			if err != nil {
@@ -53,7 +57,7 @@ sense and left blank when it does not.`,
 			}
 			defer client.Close()
 
-			return explain(clients.List(cmd.Context(), client, os.Stdout, clients.Options{
+			return explain(clients.List(cmd.Context(), client, cmd.OutOrStdout(), clients.Options{
 				Keep:           keep,
 				ShowReserved:   reserved,
 				IncludeOffline: all,
@@ -78,7 +82,7 @@ func newClientsVendorCommand() *cobra.Command {
 
 Entirely offline: it reads the cached IEEE OUI registry and never opens a session. Useful
 for identifying a device from a MAC someone sent you.`,
-		Args: cobra.ExactArgs(1),
+		Args: wrapArgsError(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cacheDir, err := conn.OUICacheDir()
 			if err != nil {
@@ -89,21 +93,22 @@ for identifying a device from a MAC someone sent you.`,
 				return err
 			}
 
+			out := cmd.OutOrStdout()
 			vendor := db.Lookup(args[0])
 			if vendor == "" {
 				// A locally-administered or randomized address has no registry entry,
 				// and saying "unknown" would imply a failed lookup rather than an
 				// address that by design identifies nobody.
-				fmt.Printf("%s  no registered manufacturer (locally administered or randomized)\n",
+				fmt.Fprintf(out, "%s  no registered manufacturer (locally administered or randomized)\n",
 					strings.ToLower(args[0]))
 				return nil
 			}
 			if asJSON() {
-				return writeJSON(os.Stdout, map[string]string{
+				return writeJSON(out, map[string]string{
 					"mac": strings.ToLower(args[0]), "vendor": vendor,
 				})
 			}
-			fmt.Printf("%s  %s\n", strings.ToLower(args[0]), vendor)
+			fmt.Fprintf(out, "%s  %s\n", strings.ToLower(args[0]), vendor)
 			return nil
 		},
 	}

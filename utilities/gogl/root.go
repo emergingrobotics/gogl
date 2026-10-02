@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -57,10 +58,25 @@ blast radius of a mistake is bounded by what the API can express.`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 
+		// Replaces cobra's implicit legacyArgs so an unknown command reports exit 2
+		// (a usage mistake) rather than the bare exit 1 a plain error would carry.
+		Args: wrapArgsError(unknownSubcommandArgs),
+
+		// RunE makes root runnable so its Args validator is reached rather than cobra
+		// short-circuiting a bare `gogl` to help; the body just shows help either way.
+		RunE: showHelp,
+
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			return loadConfig(cmd)
 		},
 	}
+
+	// Cobra's own parse failures (unknown flag, malformed value) are plain errors;
+	// without this they exit 1 instead of the 2 a usage mistake owes. Inherited by
+	// every subcommand.
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return fmt.Errorf("%w: %s", errUsage, err)
+	})
 
 	flags := root.PersistentFlags()
 	flags.StringVar(&opts.router, "router", "", "named router from the config file")
@@ -83,6 +99,46 @@ blast radius of a mistake is bounded by what the API can express.`,
 	return root
 }
 
+// wrapArgsError adapts a positional-argument validator so its rejection carries
+// errUsage, and therefore exit 2. Cobra's built-in validators (NoArgs, ExactArgs,
+// MaximumNArgs) return bare errors, and SetFlagErrorFunc covers only flag parsing, so
+// every Args assignment in the command tree goes through here.
+func wrapArgsError(validator cobra.PositionalArgs) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if err := validator(cmd, args); err != nil {
+			return fmt.Errorf("%w: %s", errUsage, err)
+		}
+		return nil
+	}
+}
+
+// showHelp is the RunE of every command that only groups subcommands. It makes those
+// commands runnable, which is what lets cobra reach their Args validator instead of
+// short-circuiting to help with exit 0.
+func showHelp(cmd *cobra.Command, _ []string) error { return cmd.Help() }
+
+// unknownSubcommandArgs reproduces cobra's unexported legacyArgs behavior for a command
+// that has subcommands: any leftover positional argument is an unknown command, reported
+// with cobra's own "did you mean" suggestions.
+func unknownSubcommandArgs(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	msg := fmt.Sprintf("unknown command %q for %q", args[0], cmd.CommandPath())
+	if cmd.DisableSuggestions {
+		return errors.New(msg)
+	}
+	// SuggestionsFor uses the field as-is; cobra's own call path applies this default
+	// first, so mirror it or every distance test fails.
+	if cmd.SuggestionsMinimumDistance <= 0 {
+		cmd.SuggestionsMinimumDistance = 2
+	}
+	if suggestions := cmd.SuggestionsFor(args[0]); len(suggestions) > 0 {
+		msg += fmt.Sprintf("\n\nDid you mean this?\n\t%s", strings.Join(suggestions, "\n\t"))
+	}
+	return errors.New(msg)
+}
+
 // loadConfig reads the configuration file and resolves the target router.
 //
 // Runs for every command including the offline ones. That is deliberate: a malformed
@@ -96,7 +152,7 @@ func loadConfig(cmd *cobra.Command) error {
 	opts.file = file
 
 	if opts.output != outputText && opts.output != outputJSON {
-		return fmt.Errorf("--output %q: want %q or %q", opts.output, outputText, outputJSON)
+		return fmt.Errorf("%w: --output %q: want %q or %q", errUsage, opts.output, outputText, outputJSON)
 	}
 	// A file-level output preference applies only when the flag was not given.
 	if !cmd.Flags().Changed("output") && file.Output != "" {
@@ -105,7 +161,7 @@ func loadConfig(cmd *cobra.Command) error {
 
 	router, err := file.Resolve(opts.router)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %s", errUsage, err)
 	}
 
 	opts.flags = conn.Flags{

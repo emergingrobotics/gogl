@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -22,6 +21,11 @@ commands write.
 
 The domain is stored inside gogl's block in that file, because the firmware exposes no
 dnsmasq domain setting.`,
+
+		// Runnable + Args so an unknown subcommand here is a usage error (exit 2) rather
+		// than cobra's silent help-with-exit-0 for a non-runnable parent.
+		Args: wrapArgsError(unknownSubcommandArgs),
+		RunE: showHelp,
 	}
 	dns.AddCommand(
 		newDNSShowCommand(),
@@ -37,7 +41,7 @@ func newDNSShowCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "show",
 		Short: "Report the domain and every managed DNS name",
-		Args:  cobra.NoArgs,
+		Args:  wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := connect()
 			if err != nil {
@@ -49,25 +53,26 @@ func newDNSShowCommand() *cobra.Command {
 			if err != nil {
 				return explain(err)
 			}
+			out := cmd.OutOrStdout()
 			if asJSON() {
-				return writeJSON(os.Stdout, map[string]any{
+				return writeJSON(out, map[string]any{
 					"domain":  file.Domain,
 					"entries": file.Entries,
 				})
 			}
 
 			if file.Domain == "" {
-				fmt.Println("DOMAIN     (not set; reservation writes are refused until it is)")
+				fmt.Fprintln(out, "DOMAIN     (not set; reservation writes are refused until it is)")
 			} else {
-				fmt.Printf("DOMAIN     %s\n", file.Domain)
+				fmt.Fprintf(out, "DOMAIN     %s\n", file.Domain)
 			}
 			if len(file.Entries) == 0 {
-				fmt.Println("no managed DNS names")
+				fmt.Fprintln(out, "no managed DNS names")
 				return nil
 			}
 
-			fmt.Println()
-			tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
+			fmt.Fprintln(out)
+			tw := tabwriter.NewWriter(out, 0, 8, 2, ' ', 0)
 			fmt.Fprintln(tw, "ADDRESS\tNAMES")
 			for _, e := range file.Entries {
 				fmt.Fprintf(tw, "%s\t%s\n", e.IP, joinNames(e.Names))
@@ -100,7 +105,7 @@ can find, and nothing in the router's UI marks it as incomplete.
 
 Changing an existing domain requalifies every managed name, so resolution does not split
 between two suffixes.`,
-		Args: cobra.NoArgs,
+		Args: wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if domain == "" {
 				return fmt.Errorf("%w: --domain is required", errUsage)
@@ -126,7 +131,7 @@ func newDNSAddCommand() *cobra.Command {
 
 The entry carries both the bare name and its fully-qualified form, so either resolves. A
 name already in use is replaced: two answers for one name is not a state worth keeping.`,
-		Args: cobra.ExactArgs(2),
+		Args: wrapArgsError(cobra.ExactArgs(2)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := connect()
 			if err != nil {
@@ -137,7 +142,7 @@ name already in use is replaced: two answers for one name is not a state worth k
 			if err := client.Hosts().Set(cmd.Context(), args[0], args[1]); err != nil {
 				return explain(err)
 			}
-			fmt.Printf("DNS name set: %s -> %s\n", args[0], args[1])
+			fmt.Fprintf(cmd.OutOrStdout(), "DNS name set: %s -> %s\n", args[0], args[1])
 			return nil
 		},
 	}
@@ -148,7 +153,7 @@ func newDNSRemoveCommand() *cobra.Command {
 		Use:     "rm <name>",
 		Aliases: []string{"remove"},
 		Short:   "Remove a DNS name, in either its bare or qualified form",
-		Args:    cobra.ExactArgs(1),
+		Args:    wrapArgsError(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := connect()
 			if err != nil {
@@ -159,7 +164,7 @@ func newDNSRemoveCommand() *cobra.Command {
 			if err := client.Hosts().Remove(cmd.Context(), args[0]); err != nil {
 				return explain(err)
 			}
-			fmt.Printf("DNS name removed: %s\n", args[0])
+			fmt.Fprintf(cmd.OutOrStdout(), "DNS name removed: %s\n", args[0])
 			return nil
 		},
 	}
@@ -176,7 +181,7 @@ the loopback and IPv6 entries the router resolves its own name from.
 
 This leaves reservations in place, so goglps reports the result as drift. To clear both,
 use ` + "`gogl lan reservations clear`" + `.`,
-		Args: cobra.NoArgs,
+		Args: wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := connect()
 			if err != nil {
@@ -187,7 +192,7 @@ use ` + "`gogl lan reservations clear`" + `.`,
 			if err := client.Hosts().Clear(cmd.Context()); err != nil {
 				return explain(err)
 			}
-			fmt.Println("every managed DNS name removed; the domain is unchanged")
+			fmt.Fprintln(cmd.OutOrStdout(), "every managed DNS name removed; the domain is unchanged")
 			return nil
 		},
 	}

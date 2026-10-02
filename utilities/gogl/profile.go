@@ -23,6 +23,11 @@ state. That omission is what makes it usable on a second router.
 
 For a byte-exact restore of one device, sysupgrade -b over SSH is the right tool and
 always will be.`,
+
+		// Runnable + Args so an unknown subcommand here is a usage error (exit 2) rather
+		// than cobra's silent help-with-exit-0 for a non-runnable parent.
+		Args: wrapArgsError(unknownSubcommandArgs),
+		RunE: showHelp,
 	}
 	cmd.AddCommand(newProfileExportCommand(), newProfileImportCommand())
 	return cmd
@@ -33,7 +38,7 @@ func newProfileExportCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "export",
 		Short: "Write a profile to stdout",
-		Args:  cobra.NoArgs,
+		Args:  wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := connect()
 			if err != nil {
@@ -45,16 +50,16 @@ func newProfileExportCommand() *cobra.Command {
 				WithKeys: withKeys,
 				Host:     opts.flags.Host,
 				Captured: time.Now().Format(time.RFC3339),
-			}, os.Stderr)
+			}, cmd.ErrOrStderr())
 			if err != nil {
 				return explain(err)
 			}
 			if !withKeys && len(p.Wireless) > 0 {
-				fmt.Fprintln(os.Stderr,
+				fmt.Fprintln(cmd.ErrOrStderr(),
 					"note: WiFi passphrases omitted. Applying this profile leaves the target's\n"+
 						"      existing passphrases alone. Use --with-keys to include them.")
 			}
-			return p.Write(os.Stdout)
+			return p.Write(cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().BoolVar(&withKeys, "with-keys", false,
@@ -76,9 +81,9 @@ reservations must be inside the subnet; then reservations and names; then wirele
 If the profile's subnet differs from the router's, the run stops after the network step
 and prints how to resume. The router changes address mid-write, so nothing after that
 point is reachable from the same session.`,
-		Args: cobra.MaximumNArgs(1),
+		Args: wrapArgsError(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			input := os.Stdin
+			input := cmd.InOrStdin()
 			if len(args) == 1 && args[0] != "-" {
 				f, err := os.Open(args[0])
 				if err != nil {
@@ -101,7 +106,7 @@ point is reachable from the same session.`,
 
 			return explain(profile.Apply(cmd.Context(), client, p, profile.ApplyModes{
 				DryRun: dryRun, Force: force, Wireless: wireless,
-			}, os.Stderr))
+			}, cmd.ErrOrStderr()))
 		},
 	}
 	f := cmd.Flags()

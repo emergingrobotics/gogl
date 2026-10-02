@@ -20,6 +20,11 @@ func newConfigCommand() *cobra.Command {
 This is the only area that acts on your machine rather than on a router. It holds
 everything except secrets: a password never appears in the file, coming instead from the
 environment, from a command the file names, or from a prompt.`,
+
+		// Runnable + Args so an unknown subcommand here is a usage error (exit 2) rather
+		// than cobra's silent help-with-exit-0 for a non-runnable parent.
+		Args: wrapArgsError(unknownSubcommandArgs),
+		RunE: showHelp,
 	}
 	cmd.AddCommand(newConfigShowCommand(), newConfigRoutersCommand(), newConfigInitCommand())
 	return cmd
@@ -29,15 +34,16 @@ func newConfigShowCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "show",
 		Short: "Report the config file's location and what it resolves to",
-		Args:  cobra.NoArgs,
+		Args:  wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			out := cmd.OutOrStdout()
 			exists := "yes"
 			if _, err := os.Stat(opts.file.Path()); err != nil {
 				exists = "no (flags and the environment still work)"
 			}
 
 			if asJSON() {
-				return writeJSON(os.Stdout, map[string]any{
+				return writeJSON(out, map[string]any{
 					"path":    opts.file.Path(),
 					"exists":  exists == "yes",
 					"output":  opts.output,
@@ -47,15 +53,15 @@ func newConfigShowCommand() *cobra.Command {
 				})
 			}
 
-			fmt.Printf("PATH       %s\nEXISTS     %s\nOUTPUT     %s\n",
+			fmt.Fprintf(out, "PATH       %s\nEXISTS     %s\nOUTPUT     %s\n",
 				opts.file.Path(), exists, opts.output)
 			if name := wantedRouterName(); name != "" {
-				fmt.Printf("ROUTER     %s\n", name)
+				fmt.Fprintf(out, "ROUTER     %s\n", name)
 			}
 			if opts.flags.Host != "" {
-				fmt.Printf("HOST       %s:%d\n", opts.flags.Host, opts.flags.Port)
+				fmt.Fprintf(out, "HOST       %s:%d\n", opts.flags.Host, opts.flags.Port)
 			} else {
-				fmt.Printf("HOST       (none: pass -H, set %s, or configure a router)\n",
+				fmt.Fprintf(out, "HOST       (none: pass -H, set %s, or configure a router)\n",
 					config.EnvHost)
 			}
 			return nil
@@ -67,19 +73,20 @@ func newConfigRoutersCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "routers",
 		Short: "List the configured routers",
-		Args:  cobra.NoArgs,
+		Args:  wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			out := cmd.OutOrStdout()
 			names := opts.file.Names()
 			if asJSON() {
-				return writeJSON(os.Stdout, names)
+				return writeJSON(out, names)
 			}
 			if len(names) == 0 {
-				fmt.Printf("no routers configured in %s\n", opts.file.Path())
-				fmt.Println("run `gogl config init` to write a starting point")
+				fmt.Fprintf(out, "no routers configured in %s\n", opts.file.Path())
+				fmt.Fprintln(out, "run `gogl config init` to write a starting point")
 				return nil
 			}
 
-			tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
+			tw := tabwriter.NewWriter(out, 0, 8, 2, ' ', 0)
 			fmt.Fprintln(tw, "NAME\tHOST\tDOMAIN\tPASSWORD")
 			for _, name := range names {
 				r := opts.file.Routers[name]
@@ -107,11 +114,11 @@ func newConfigInitCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Write a starting configuration file",
-		Args:  cobra.NoArgs,
+		Args:  wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path := config.Path()
 			if _, err := os.Stat(path); err == nil && !force {
-				return fmt.Errorf("%s already exists; pass --force to overwrite", path)
+				return fmt.Errorf("%w: %s already exists; pass --force to overwrite", errUsage, path)
 			}
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				return err
@@ -122,8 +129,8 @@ func newConfigInitCommand() *cobra.Command {
 			if err := os.WriteFile(path, []byte(starterConfig), 0o600); err != nil {
 				return err
 			}
-			fmt.Printf("wrote %s\n", path)
-			fmt.Println("edit it, then run `gogl config show`")
+			fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", path)
+			fmt.Fprintln(cmd.OutOrStdout(), "edit it, then run `gogl config show`")
 			return nil
 		},
 	}

@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"os"
+	"io"
 	"text/tabwriter"
 	"time"
 
@@ -17,6 +17,11 @@ func newLANCommand() *cobra.Command {
 	lan := &cobra.Command{
 		Use:   "lan",
 		Short: "The LAN address, DHCP pool, reservations and DNS names",
+
+		// Runnable + Args so an unknown subcommand here is a usage error (exit 2) rather
+		// than cobra's silent help-with-exit-0 for a non-runnable parent.
+		Args: wrapArgsError(unknownSubcommandArgs),
+		RunE: showHelp,
 	}
 	lan.AddCommand(
 		newLANShowCommand(),
@@ -33,7 +38,7 @@ func newLANShowCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show",
 		Short: "Report the LAN address, DHCP pool, reservation counts and radios",
-		Args:  cobra.NoArgs,
+		Args:  wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := connect()
 			if err != nil {
@@ -41,7 +46,7 @@ func newLANShowCommand() *cobra.Command {
 			}
 			defer client.Close()
 
-			return explain(netcfg.Show(cmd.Context(), client, os.Stdout, os.Stderr,
+			return explain(netcfg.Show(cmd.Context(), client, cmd.OutOrStdout(), cmd.ErrOrStderr(),
 				netcfg.ShowOptions{JSON: asJSON(), ShowKey: showKey}))
 		},
 	}
@@ -66,7 +71,7 @@ Moving the subnet requires --ip, --mask, --pool-start and --pool-end together, b
 pool from the old subnet cannot be valid in a new one. It drops the session, and it is
 refused while reservations exist unless --force: the firmware silently rewrites every
 reservation into the new subnet, which is usually what you want but is unannounced.`,
-		Args: cobra.NoArgs,
+		Args: wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			moving := ip != "" || mask != ""
 			pooling := poolStart != "" || poolEnd != ""
@@ -120,7 +125,7 @@ func newLANLeasesCommand() *cobra.Command {
 
 Leases are not reservations: a lease expires. This is how you discover what is worth
 reserving.`,
-		Args: cobra.NoArgs,
+		Args: wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := connect()
 			if err != nil {
@@ -132,15 +137,16 @@ reserving.`,
 			if err != nil {
 				return explain(err)
 			}
+			out := cmd.OutOrStdout()
 			if asJSON() {
-				return writeJSON(os.Stdout, leases)
+				return writeJSON(out, leases)
 			}
-			return formatLeases(os.Stdout, leases)
+			return formatLeases(out, leases)
 		},
 	}
 }
 
-func formatLeases(w *os.File, leases []types.DHCPLease) error {
+func formatLeases(w io.Writer, leases []types.DHCPLease) error {
 	if len(leases) == 0 {
 		_, err := fmt.Fprintln(w, "no active leases")
 		return err
@@ -175,6 +181,11 @@ func newReservationsCommand() *cobra.Command {
 Each host declaration is two writes: a static bind for the address and a host-file entry
 for the name, because the firmware stores them separately and joins them for nobody.
 These commands keep the two in step.`,
+
+		// Runnable + Args so an unknown subcommand here is a usage error (exit 2) rather
+		// than cobra's silent help-with-exit-0 for a non-runnable parent.
+		Args: wrapArgsError(unknownSubcommandArgs),
+		RunE: showHelp,
 	}
 	res.AddCommand(
 		newReservationsListCommand(),
@@ -191,7 +202,7 @@ func newReservationsListCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List the reservations on the router",
-		Args:  cobra.NoArgs,
+		Args:  wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := connect()
 			if err != nil {
@@ -204,9 +215,9 @@ func newReservationsListCommand() *cobra.Command {
 				if err != nil {
 					return explain(err)
 				}
-				return writeJSON(os.Stdout, list)
+				return writeJSON(cmd.OutOrStdout(), list)
 			}
-			return explain(reservations.Get(cmd.Context(), os.Stdout,
+			return explain(reservations.Get(cmd.Context(), cmd.OutOrStdout(),
 				client.Reservations(), client.Network(), time.Now().Format("2006-01-02")))
 		},
 	}
@@ -220,7 +231,7 @@ func newReservationsExportCommand() *cobra.Command {
 
 The format is kept on its own merits, not for compatibility: it diffs, it reviews, it
 lives in git, and it is how a UniFi dump produced by gofips gets in.`,
-		Args: cobra.NoArgs,
+		Args: wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := connect()
 			if err != nil {
@@ -228,7 +239,7 @@ lives in git, and it is how a UniFi dump produced by gofips gets in.`,
 			}
 			defer client.Close()
 
-			return explain(reservations.Get(cmd.Context(), os.Stdout,
+			return explain(reservations.Get(cmd.Context(), cmd.OutOrStdout(),
 				client.Reservations(), client.Network(), time.Now().Format("2006-01-02")))
 		},
 	}
@@ -244,7 +255,7 @@ func newReservationsImportCommand() *cobra.Command {
 Idempotent: a second run reports everything skipped and leaves the host file
 byte-identical. Requires a configured domain, since a reservation with no name is an
 address nothing can find.`,
-		Args: cobra.MaximumNArgs(1),
+		Args: wrapArgsError(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := connect()
 			if err != nil {
@@ -277,7 +288,7 @@ func newReservationsAddCommand() *cobra.Command {
 		Short: "Add one host, by flags or as an ISC DHCP declaration fragment",
 		Example: `  gogl lan reservations add --name nas --mac aa:bb:cc:dd:ee:01 --ip 192.168.8.13
   gogl lan reservations add 'host nas { hardware ethernet aa:bb:cc:dd:ee:01; fixed-address 192.168.8.13; }'`,
-		Args: cobra.MaximumNArgs(1),
+		Args: wrapArgsError(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fragment, err := addFragment(args, name, mac, ip)
 			if err != nil {
@@ -336,7 +347,7 @@ func newReservationsRemoveCommand() *cobra.Command {
 The name goes first, then the binding: a leftover binding is an address with no name,
 which the next import repairs, while a leftover name keeps resolving to an address
 nothing holds.`,
-		Args: cobra.NoArgs,
+		Args: wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := connect()
 			if err != nil {
@@ -369,7 +380,7 @@ Both, because they are one intent stored in two tables. The DNS domain survives:
 configuration rather than content.
 
 This is also the precondition for moving the LAN subnet without --force.`,
-		Args: cobra.NoArgs,
+		Args: wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := connect()
 			if err != nil {

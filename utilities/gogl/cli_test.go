@@ -57,10 +57,10 @@ func run(t *testing.T, s *mock.Server, args ...string) (stdout string, err error
 	t.Setenv("GL_PASSWORD", "")
 	t.Setenv("GL_ROUTER_IP", "")
 
-	// The command tree writes to os.Stdout directly, so capture the file descriptor
-	// rather than a cobra writer. That is deliberate: the formatters were written
-	// against os.Stdout and rewriting them to take an io.Writer everywhere would be a
-	// larger change than this test justifies.
+	// The tree writes through cmd.OutOrStdout(), which resolves to os.Stdout when the
+	// harness sets no writer. Capturing at the file-descriptor level rather than via
+	// cmd.SetOut keeps this helper driving the tree exactly as main does, with no output
+	// wiring the production path does not have.
 	old := os.Stdout
 	r, w, pipeErr := os.Pipe()
 	if pipeErr != nil {

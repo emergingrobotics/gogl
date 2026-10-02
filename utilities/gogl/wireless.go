@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -40,6 +39,11 @@ func newRadioCommand() *cobra.Command {
 These are the fields the firmware scopes by radio rather than by SSID, so they affect
 every network on that radio. Retuning drops the radio's clients, which is why it carries
 the same wired-session guard as an SSID change.`,
+
+		// Runnable + Args so an unknown subcommand here is a usage error (exit 2) rather
+		// than cobra's silent help-with-exit-0 for a non-runnable parent.
+		Args: wrapArgsError(unknownSubcommandArgs),
+		RunE: showHelp,
 	}
 	radio.AddCommand(newRadioListCommand(), newRadioShowCommand(), newRadioSetCommand())
 	return radio
@@ -50,7 +54,7 @@ func newRadioListCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List every radio with the values it accepts",
-		Args:  cobra.NoArgs,
+		Args:  wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := connect()
 			if err != nil {
@@ -62,10 +66,11 @@ func newRadioListCommand() *cobra.Command {
 			if err != nil {
 				return explain(err)
 			}
+			out := cmd.OutOrStdout()
 			if asJSON() {
-				return writeJSON(os.Stdout, radios)
+				return writeJSON(out, radios)
 			}
-			return netcfg.FormatWireless(os.Stdout, radios, showKey)
+			return netcfg.FormatWireless(out, radios, showKey)
 		},
 	}
 	cmd.Flags().BoolVar(&showKey, "show-key", false, "print WiFi passphrases instead of masking them")
@@ -77,7 +82,7 @@ func newRadioShowCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show",
 		Short: "Report one radio",
-		Args:  cobra.NoArgs,
+		Args:  wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := connect()
 			if err != nil {
@@ -93,10 +98,11 @@ func newRadioShowCommand() *cobra.Command {
 			if err != nil {
 				return explain(err)
 			}
+			out := cmd.OutOrStdout()
 			if asJSON() {
-				return writeJSON(os.Stdout, radio)
+				return writeJSON(out, radio)
 			}
-			return netcfg.FormatWireless(os.Stdout, []types.WirelessRadio{*radio}, false)
+			return netcfg.FormatWireless(out, []types.WirelessRadio{*radio}, false)
 		},
 	}
 	target.register(cmd, false)
@@ -123,7 +129,7 @@ the available ones named rather than answered by a bare firmware error.`,
 		Example: `  gogl radio set --band 5 --channel 149
   gogl radio set --band 2.4 --channel 0        # 0 means auto
   gogl radio set --device radio1 --width 80 --power Low`,
-		Args: cobra.NoArgs,
+		Args: wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			changes := types.RadioChanges{}
 			f := cmd.Flags()
@@ -177,6 +183,11 @@ func newWiFiCommand() *cobra.Command {
 
 These are the fields the firmware scopes by interface rather than by radio, so a guest
 SSID and a main SSID on the same radio are set independently.`,
+
+		// Runnable + Args so an unknown subcommand here is a usage error (exit 2) rather
+		// than cobra's silent help-with-exit-0 for a non-runnable parent.
+		Args: wrapArgsError(unknownSubcommandArgs),
+		RunE: showHelp,
 	}
 	wifi.AddCommand(newWiFiListCommand(), newWiFiShowCommand(), newWiFiSetCommand())
 	return wifi
@@ -187,7 +198,7 @@ func newWiFiListCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List every wireless interface",
-		Args:  cobra.NoArgs,
+		Args:  wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := connect()
 			if err != nil {
@@ -199,14 +210,15 @@ func newWiFiListCommand() *cobra.Command {
 			if err != nil {
 				return explain(err)
 			}
+			out := cmd.OutOrStdout()
 			if asJSON() {
 				ifaces, err := client.Wireless().Interfaces(cmd.Context())
 				if err != nil {
 					return explain(err)
 				}
-				return writeJSON(os.Stdout, ifaces)
+				return writeJSON(out, ifaces)
 			}
-			return netcfg.FormatWireless(os.Stdout, radios, showKey)
+			return netcfg.FormatWireless(out, radios, showKey)
 		},
 	}
 	cmd.Flags().BoolVar(&showKey, "show-key", false, "print WiFi passphrases instead of masking them")
@@ -218,7 +230,7 @@ func newWiFiShowCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show",
 		Short: "Report one wireless interface",
-		Args:  cobra.NoArgs,
+		Args:  wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := connect()
 			if err != nil {
@@ -234,10 +246,11 @@ func newWiFiShowCommand() *cobra.Command {
 			if err != nil {
 				return explain(err)
 			}
+			out := cmd.OutOrStdout()
 			if asJSON() {
-				return writeJSON(os.Stdout, got)
+				return writeJSON(out, got)
 			}
-			fmt.Printf("%s\nSSID        %s\nENCRYPTION  %s\nHIDDEN      %t\nENABLED     %t\nKEY         %s\n",
+			fmt.Fprintf(out, "%s\nSSID        %s\nENCRYPTION  %s\nHIDDEN      %t\nENABLED     %t\nKEY         %s\n",
 				got.Describe(), got.SSID, got.Encryption, got.Hidden, got.Enabled, got.MaskedKey())
 			return nil
 		},
@@ -271,7 +284,7 @@ recorded in shell history, which is the reason the router password has no flag e
 		Example: `  gogl wifi set --band 5 --ssid lab-5g
   gogl wifi set --band 5 --passphrase                    # prompts, echo off
   gogl wifi set --band 2.4 --guest --enabled=true --hidden=false`,
-		Args: cobra.NoArgs,
+		Args: wrapArgsError(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			f := cmd.Flags()
 			changes := types.InterfaceChanges{}
